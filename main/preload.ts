@@ -1,11 +1,14 @@
 import { contextBridge, ipcRenderer } from "electron";
 
-type Mode = "playful" | "serious";
+type PrimaryMode = "serious" | "active" | "idle";
+type EffectiveMode = "serious" | "active" | "idle";
 type AppCategory = "work" | "casual" | "unknown";
 type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
 type ModeState = {
-  mode: Mode;
+  primaryMode: PrimaryMode;
+  effectiveMode: EffectiveMode;
+  effectiveReason: string;
   idleMs: number;
   isIdle: boolean;
   focusLocked: boolean;
@@ -29,6 +32,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   addMemoryFact: (fact: string) => ipcRenderer.invoke("memory:addFact", fact),
 
   getMode: () => ipcRenderer.invoke("mode:get"),
+  setPrimaryMode: (mode: PrimaryMode) => ipcRenderer.invoke("mode:setPrimary", mode),
   toggleFocusLock: () => ipcRenderer.invoke("mode:toggleFocusLock"),
   markUserSent: () => ipcRenderer.invoke("mode:userSent"),
   onModeUpdate: (cb: (state: ModeState) => void) => {
