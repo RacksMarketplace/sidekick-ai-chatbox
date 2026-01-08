@@ -49,6 +49,43 @@ function msToMin(ms: number) {
   return Math.floor(ms / 60000);
 }
 
+function formatModeLabel(mode: PrimaryMode | EffectiveMode) {
+  return `${mode.charAt(0).toUpperCase()}${mode.slice(1)}`;
+}
+
+const MODE_QUESTION_PATTERNS = new Set([
+  "what mode am i in",
+  "what mode are you in",
+  "what mode now",
+  "why are you in serious mode",
+  "how do i change modes",
+  "how do i go to active mode",
+  "are you idle",
+]);
+
+function normalizeModeQuestion(text: string) {
+  return text
+    .toLowerCase()
+    .replace(/[^\w\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isModeQuestion(text: string) {
+  return MODE_QUESTION_PATTERNS.has(normalizeModeQuestion(text));
+}
+
+function buildModeResponse(state: ModeState) {
+  const primary = formatModeLabel(state.primaryMode);
+  const effective = formatModeLabel(state.effectiveMode);
+  return [
+    `Primary mode: ${primary}.`,
+    `Effective mode: ${effective}.`,
+    `Reason: ${state.effectiveReason}.`,
+    "You can change modes using the buttons at the top.",
+  ].join("\n");
+}
+
 export default function App() {
   const api = window.electronAPI;
 
@@ -141,6 +178,22 @@ export default function App() {
   async function sendMessage() {
     if (!api) return;
     if (!input.trim() || loading) return;
+
+    if (isModeQuestion(input)) {
+      const userMsg: Message = {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: input.trim(),
+      };
+      const reply = buildModeResponse(modeState);
+      setMessages((prev) => [
+        ...prev,
+        userMsg,
+        { id: crypto.randomUUID(), role: "assistant", content: reply },
+      ]);
+      setInput("");
+      return;
+    }
 
     const userMsg: Message = {
       id: crypto.randomUUID(),
