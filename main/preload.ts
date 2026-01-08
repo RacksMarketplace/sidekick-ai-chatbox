@@ -11,6 +11,11 @@ type ChatMessage = {
   };
 };
 
+type ScreenLookResult = {
+  ok: boolean;
+  reason?: string;
+};
+
 type ModeState = {
   primaryMode: PrimaryMode;
   effectiveMode: EffectiveMode;
@@ -47,6 +52,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onProactiveMessage: (cb: (message: ChatMessage) => void) => {
     ipcRenderer.on("proactive:message", (_event, message: ChatMessage) => cb(message));
   },
+  lookAtScreen: (): Promise<ScreenLookResult> => ipcRenderer.invoke("screen:look"),
+  discardScreenLook: (): Promise<boolean> => ipcRenderer.invoke("screen:discard"),
   reportUserActivity: () => ipcRenderer.send("proactive:activity"),
   reportUserTyping: () => ipcRenderer.send("proactive:typing"),
 });

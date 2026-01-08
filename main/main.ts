@@ -5,7 +5,7 @@ import fs from "fs";
 import { execFile } from "child_process";
 import { promisify } from "util";
 
-const { app, BrowserWindow, globalShortcut, ipcMain, screen, powerMonitor } = electron;
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, powerMonitor, desktopCapturer } = electron;
 
 type PrimaryMode = "serious" | "active" | "idle";
 type EffectiveMode = "serious" | "active" | "idle";
@@ -13,6 +13,28 @@ type AppCategory = "work" | "casual" | "unknown";
 type ChatMessage = {
   role: "system" | "user" | "assistant";
   content: string;
+  meta?: {
+    type?: "proactive";
+  };
+};
+
+type ImageContentPart = {
+  type: "image_url";
+  image_url: {
+    url: string;
+  };
+};
+
+type TextContentPart = {
+  type: "text";
+  text: string;
+};
+
+type OpenAIContent = string | Array<TextContentPart | ImageContentPart>;
+
+type OpenAIMessage = {
+  role: "system" | "user" | "assistant";
+  content: OpenAIContent;
   meta?: {
     type?: "proactive";
   };
@@ -36,6 +58,7 @@ type Memory = {
 };
 
 let mainWindow: electron.BrowserWindow | null = null;
+let pendingScreenshot: string | null = null;
 
 const execFileAsync = promisify(execFile);
 
@@ -503,6 +526,28 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
   ].join("\n");
 }
 
+async function captureOneShotScreenshot(): Promise<string> {
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const scaleFactor = primaryDisplay.scaleFactor || 1;
+  const { width, height } = primaryDisplay.size;
+  const sources = await desktopCapturer.getSources({
+    types: ["screen"],
+    thumbnailSize: {
+      width: Math.max(1, Math.round(width * scaleFactor)),
+      height: Math.max(1, Math.round(height * scaleFactor)),
+    },
+  });
+
+  const primarySource =
+    sources.find((source) => source.display_id === String(primaryDisplay.id)) ?? sources[0];
+
+  if (!primarySource) {
+    throw new Error("No screen sources available");
+  }
+
+  return primarySource.thumbnail.toDataURL();
+}
+
 // -------------------- WINDOW --------------------
 
 function createWindow() {
@@ -677,6 +722,24 @@ ipcMain.on("proactive:typing", () => {
   noteUserTyping();
 });
 
+// -------------------- IPC: SCREEN LOOK --------------------
+
+ipcMain.handle("screen:look", async () => {
+  if (modeState.effectiveMode !== "active") {
+    return { ok: false, reason: "not_available" };
+  }
+
+  const dataUrl = await captureOneShotScreenshot();
+  pendingScreenshot = dataUrl;
+
+  return { ok: true };
+});
+
+ipcMain.handle("screen:discard", async () => {
+  pendingScreenshot = null;
+  return true;
+});
+
 // -------------------- IPC: AI CHAT --------------------
 
 ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
@@ -695,10 +758,33 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
 
   const mem = readMemory();
   const systemPrompt = buildSystemPrompt(modeState, mem);
+  const imageSystemNote =
+    "The user provided an image for this single response. The image is user-provided, one-shot, and must not be assumed to persist. Do not reference any past images.";
 
-  const payload: ChatMessage[] = [
+  const oneShotScreenshot = pendingScreenshot;
+  pendingScreenshot = null;
+  const canUseScreenshot = Boolean(oneShotScreenshot) && modeState.effectiveMode === "active";
+
+  const chatMessages: OpenAIMessage[] = messages
+    .filter((m) => m.role !== "system" && m.meta?.type !== "proactive")
+    .map((m) => ({ role: m.role, content: m.content, meta: m.meta }));
+
+  if (canUseScreenshot) {
+    for (let i = chatMessages.length - 1; i >= 0; i -= 1) {
+      if (chatMessages[i].role === "user" && typeof chatMessages[i].content === "string") {
+        chatMessages[i].content = [
+          { type: "text", text: chatMessages[i].content },
+          { type: "image_url", image_url: { url: oneShotScreenshot as string } },
+        ];
+        break;
+      }
+    }
+  }
+
+  const payload: OpenAIMessage[] = [
     { role: "system", content: systemPrompt },
-    ...messages.filter((m) => m.role !== "system" && m.meta?.type !== "proactive"),
+    ...(canUseScreenshot ? [{ role: "system", content: imageSystemNote }] : []),
+    ...chatMessages,
   ];
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {

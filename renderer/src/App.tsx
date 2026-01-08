@@ -51,6 +51,8 @@ declare global {
       markUserSent: () => Promise<ModeState>;
       onModeUpdate: (cb: (state: ModeState) => void) => void;
       onProactiveMessage: (cb: (message: ChatMessage) => void) => void;
+      lookAtScreen: () => Promise<{ ok: boolean; reason?: string }>;
+      discardScreenLook: () => Promise<boolean>;
       reportUserActivity: () => void;
       reportUserTyping: () => void;
     };
@@ -127,6 +129,7 @@ export default function App() {
 
   const [memory, setMemory] = useState<Memory>({ updatedAt: Date.now(), facts: [] });
   const [rememberText, setRememberText] = useState("");
+  const [lookPending, setLookPending] = useState(false);
 
   const primaryLabel = useMemo(() => {
     return formatModeLabel(modeState.primaryMode);
@@ -208,6 +211,11 @@ export default function App() {
     if (!api) return;
     if (!input.trim() || loading) return;
 
+    const shouldAttachLook = lookPending;
+    if (shouldAttachLook) {
+      setLookPending(false);
+    }
+
     if (isModeQuestion(input)) {
       const userMsg: Message = {
         id: crypto.randomUUID(),
@@ -215,10 +223,22 @@ export default function App() {
         content: input.trim(),
       };
       const reply = buildModeResponse(modeState);
+      if (shouldAttachLook) {
+        await api.discardScreenLook();
+      }
       setMessages((prev) => [
         ...prev,
         userMsg,
         { id: crypto.randomUUID(), role: "assistant", content: reply },
+        ...(shouldAttachLook
+          ? [
+              {
+                id: crypto.randomUUID(),
+                role: "assistant",
+                content: "I didn’t use that look. Click “Look at this” again when you want me to take a look.",
+              },
+            ]
+          : []),
       ]);
       setInput("");
       api.reportUserActivity?.();
@@ -282,6 +302,42 @@ export default function App() {
     const mem = await api.addMemoryFact(text);
     setMemory(mem);
     setRememberText("");
+  }
+
+  async function lookAtScreen() {
+    if (!api || loading || lookPending) return;
+    if (modeState.effectiveMode !== "active") {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: "I can only do that while we’re hanging out.",
+        },
+      ]);
+      return;
+    }
+
+    try {
+      const result = await api.lookAtScreen();
+      if (!result.ok) {
+        setMessages((prev) => [
+          ...prev,
+          { id: crypto.randomUUID(), role: "assistant", content: "Not right now. Try again in Hang out." },
+        ]);
+        return;
+      }
+      setMessages((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), role: "assistant", content: "Okay. I’ll take a quick look." },
+      ]);
+      setLookPending(true);
+    } catch (err: any) {
+      setMessages((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), role: "assistant", content: `Error: ${err?.message ?? String(err)}` },
+      ]);
+    }
   }
 
   return (
@@ -495,6 +551,22 @@ export default function App() {
             fontSize: 13,
           }}
         />
+        <button
+          onClick={lookAtScreen}
+          disabled={loading || !api || lookPending}
+          style={{
+            padding: "8px 12px",
+            borderRadius: 999,
+            border: "none",
+            background: lookPending ? "rgba(255,255,255,0.2)" : "rgba(255,255,255,0.1)",
+            color: "#fff",
+            cursor: loading || lookPending ? "default" : "pointer",
+            fontSize: 12,
+            opacity: api ? 1 : 0.6,
+          }}
+        >
+          Look at this
+        </button>
         <button
           onClick={sendMessage}
           disabled={loading || !api}
