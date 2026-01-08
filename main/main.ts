@@ -263,7 +263,7 @@ async function refreshActiveApp() {
 const modeState: ModeState = {
   primaryMode: DEFAULT_PRIMARY_MODE,
   effectiveMode: "active",
-  effectiveReason: "primary mode active",
+  effectiveReason: "primary setting: Hang out",
   idleMs: 0,
   isIdle: false,
   focusLocked: false,
@@ -282,11 +282,11 @@ function computeEffectiveMode(now: number) {
   modeState.isIdle = idleMs >= IDLE_THRESHOLD_MS;
 
   if (modeState.primaryMode === "idle") {
-    return { mode: "idle" as const, reason: "primary mode set to idle" };
+    return { mode: "idle" as const, reason: "primary setting: Quiet" };
   }
 
   if (modeState.primaryMode === "serious") {
-    return { mode: "serious" as const, reason: "primary mode set to serious" };
+    return { mode: "serious" as const, reason: "primary setting: Focus" };
   }
 
   if (modeState.focusLocked) return { mode: "serious" as const, reason: "focus lock enabled" };
@@ -302,10 +302,10 @@ function computeEffectiveMode(now: number) {
     return { mode: "active" as const, reason: "casual app detected" };
   }
 
-  if (modeState.isIdle) return { mode: "idle" as const, reason: "system idle" };
+  if (modeState.isIdle) return { mode: "idle" as const, reason: "system inactive" };
 
   // Default while active: companion-friendly
-  return { mode: "active" as const, reason: "primary mode active" };
+  return { mode: "active" as const, reason: "primary setting: Hang out" };
 }
 
 function broadcastMode() {
@@ -316,6 +316,12 @@ function broadcastMode() {
 // -------------------- PROMPT ROUTING --------------------
 
 function buildSystemPrompt(state: ModeState, mem: Memory) {
+  const formatLabel = (mode: PrimaryMode | EffectiveMode) => {
+    if (mode === "serious") return "Focus";
+    if (mode === "active") return "Hang out";
+    return "Quiet";
+  };
+
   const contextHeader = [
     `Context: primaryMode=${state.primaryMode}`,
     `effectiveMode=${state.effectiveMode}`,
@@ -327,19 +333,20 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
   ].join(" | ");
 
   const modeStatusBlock = [
-    "Mode status:",
-    `- Primary mode: ${state.primaryMode}`,
-    `- Effective mode: ${state.effectiveMode}`,
+    "Status:",
+    `- Primary setting: ${formatLabel(state.primaryMode)}`,
+    `- Current behavior: ${formatLabel(state.effectiveMode)}`,
     `- Reason: ${state.effectiveReason}`,
     "",
     "Rules:",
-    "- The user can always change primary mode using the UI.",
-    "- You must never say the user cannot change modes.",
-    "- You must never contradict the mode values above.",
-    "- When asked about modes, REPORT them exactly as stated.",
+    "- The user can always change the primary setting using the UI.",
+    "- You must never say the user cannot change this setting.",
+    "- You must never contradict the setting values above.",
+    "- When asked about your setting or behavior, REPORT them exactly as stated.",
     "- If unsure, defer to the UI state.",
-    "- Idle mode is a behavior policy: no proactive messages, minimal tone, still accurate and calm responses.",
-    '- When describing idle mode, say: "I won’t initiate conversation, but I can respond if you ask."',
+    '- Never use the word "mode" with the user.',
+    "- Quiet is a behavior policy: no proactive messages, minimal tone, still accurate and calm responses.",
+    '- When describing Quiet, say: "I won’t initiate conversation, but I can respond if you ask."',
   ].join("\n");
 
   const memoryBlock =
@@ -353,7 +360,7 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
       memoryBlock,
       modeStatusBlock,
       "",
-      "You are Sidekick, a serious, high-utility desktop assistant.",
+      "You are Sidekick in Focus.",
       "Rules:",
       "- Be concise and structured.",
       "- Prefer bullet points and steps.",
@@ -369,7 +376,7 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
       memoryBlock,
       modeStatusBlock,
       "",
-      "You are Sidekick, a calm, quiet desktop assistant.",
+      "You are Sidekick in Quiet.",
       "Rules:",
       "- Respond only when the user explicitly asks.",
       "- Keep responses minimal, calm, and low-energy.",
@@ -383,10 +390,10 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
     memoryBlock,
     modeStatusBlock,
     "",
-    "You are Sidekick, a warm, playful desktop companion.",
+    "You are Sidekick in Hang out.",
     "Rules:",
     "- Keep it short, light, and friendly.",
-    "- Offer small, low-pressure suggestions.",
+    "- Light banter is allowed if the user seems open to it.",
     "- Avoid long lists unless asked.",
     "- Do not be clingy or overly emotional.",
     "- Do not send proactive messages or nudges.",
@@ -479,10 +486,10 @@ app.whenReady().then(() => {
       modeState.effectiveReason = "screen locked";
     } else if (modeState.primaryMode === "serious") {
       modeState.effectiveMode = "serious";
-      modeState.effectiveReason = "primary mode set to serious";
+      modeState.effectiveReason = "primary setting: Focus";
     } else {
       modeState.effectiveMode = "idle";
-      modeState.effectiveReason = "primary mode set to idle";
+      modeState.effectiveReason = "primary setting: Quiet";
     }
     broadcastMode();
   });

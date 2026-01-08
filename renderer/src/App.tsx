@@ -50,7 +50,9 @@ function msToMin(ms: number) {
 }
 
 function formatModeLabel(mode: PrimaryMode | EffectiveMode) {
-  return `${mode.charAt(0).toUpperCase()}${mode.slice(1)}`;
+  if (mode === "serious") return "Focus";
+  if (mode === "active") return "Hang out";
+  return "Quiet";
 }
 
 const MODE_QUESTION_PATTERNS = new Set([
@@ -60,7 +62,13 @@ const MODE_QUESTION_PATTERNS = new Set([
   "why are you in serious mode",
   "how do i change modes",
   "how do i go to active mode",
+  "why are you in focus",
+  "how do i change this setting",
+  "how do i go to hang out",
+  "are you quiet",
   "are you idle",
+  "what setting am i in",
+  "what are you set to",
 ]);
 
 function normalizeModeQuestion(text: string) {
@@ -79,10 +87,10 @@ function buildModeResponse(state: ModeState) {
   const primary = formatModeLabel(state.primaryMode);
   const effective = formatModeLabel(state.effectiveMode);
   return [
-    `Primary mode: ${primary}.`,
-    `Effective mode: ${effective}.`,
+    `Primary setting: ${primary}.`,
+    `Current behavior: ${effective}.`,
     `Reason: ${state.effectiveReason}.`,
-    "You can change modes using the buttons at the top.",
+    "You can change this setting using the buttons at the top.",
   ].join("\n");
 }
 
@@ -98,7 +106,7 @@ export default function App() {
   const [modeState, setModeState] = useState<ModeState>({
     primaryMode: "active",
     effectiveMode: "active",
-    effectiveReason: "primary mode active",
+    effectiveReason: "primary setting: Hang out",
     idleMs: 0,
     isIdle: false,
     focusLocked: false,
@@ -109,15 +117,11 @@ export default function App() {
   const [rememberText, setRememberText] = useState("");
 
   const primaryLabel = useMemo(() => {
-    if (modeState.primaryMode === "serious") return "Serious";
-    if (modeState.primaryMode === "idle") return "Idle";
-    return "Active";
+    return formatModeLabel(modeState.primaryMode);
   }, [modeState.primaryMode]);
 
   const effectiveLabel = useMemo(() => {
-    if (modeState.effectiveMode === "serious") return "Serious";
-    if (modeState.effectiveMode === "idle") return "Idle";
-    return "Active";
+    return formatModeLabel(modeState.effectiveMode);
   }, [modeState.effectiveMode]);
 
   // If preload bridge isn't available, show a useful message instead of white screen
@@ -269,7 +273,7 @@ export default function App() {
           <div style={{ fontSize: 14, opacity: 0.9 }}>Sidekick</div>
           <div style={{ fontSize: 12, opacity: 0.65 }}>
             Primary: <b>{primaryLabel}</b> · Effective: <b>{effectiveLabel}</b>{" "}
-            <span style={{ opacity: 0.75 }}>({modeState.effectiveReason})</span> · Idle:{" "}
+            <span style={{ opacity: 0.75 }}>({modeState.effectiveReason})</span> · Inactivity:{" "}
             {msToMin(modeState.idleMs)}m
           </div>
         </div>
@@ -277,9 +281,9 @@ export default function App() {
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <div style={{ display: "flex", gap: 6 }}>
             {([
-              { value: "serious", label: "Serious" },
-              { value: "active", label: "Active" },
-              { value: "idle", label: "Idle" },
+              { value: "serious", label: "Focus" },
+              { value: "active", label: "Hang out" },
+              { value: "idle", label: "Quiet" },
             ] as const).map((option) => (
               <button
                 key={option.value}
