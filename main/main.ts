@@ -326,6 +326,22 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
     `appCategory=${state.appCategory}`,
   ].join(" | ");
 
+  const modeStatusBlock = [
+    "Mode status:",
+    `- Primary mode: ${state.primaryMode}`,
+    `- Effective mode: ${state.effectiveMode}`,
+    `- Reason: ${state.effectiveReason}`,
+    "",
+    "Rules:",
+    "- The user can always change primary mode using the UI.",
+    "- You must never say the user cannot change modes.",
+    "- You must never contradict the mode values above.",
+    "- When asked about modes, REPORT them exactly as stated.",
+    "- If unsure, defer to the UI state.",
+    "- Idle mode is a behavior policy: no proactive messages, minimal tone, still accurate and calm responses.",
+    '- When describing idle mode, say: "I won’t initiate conversation, but I can respond if you ask."',
+  ].join("\n");
+
   const memoryBlock =
     mem.facts.length > 0
       ? `Memory (persistent facts):\n- ${mem.facts.join("\n- ")}`
@@ -335,6 +351,7 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
     return [
       contextHeader,
       memoryBlock,
+      modeStatusBlock,
       "",
       "You are Sidekick, a serious, high-utility desktop assistant.",
       "Rules:",
@@ -342,7 +359,6 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
       "- Prefer bullet points and steps.",
       "- No jokes or playful banter unless the user explicitly asks.",
       "- Do not send proactive messages or nudges.",
-      "- If the user asks about focus lock or mode, answer using the Context header.",
       "- If something is ambiguous, ask ONE clarifying question.",
     ].join("\n");
   }
@@ -351,6 +367,7 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
     return [
       contextHeader,
       memoryBlock,
+      modeStatusBlock,
       "",
       "You are Sidekick, a calm, quiet desktop assistant.",
       "Rules:",
@@ -358,13 +375,13 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
       "- Keep responses minimal, calm, and low-energy.",
       "- Do not send proactive messages, nudges, or suggestions.",
       "- Avoid jokes or playful banter unless the user explicitly asks.",
-      "- If the user asks about focus lock or mode, answer using the Context header.",
     ].join("\n");
   }
 
   return [
     contextHeader,
     memoryBlock,
+    modeStatusBlock,
     "",
     "You are Sidekick, a warm, playful desktop companion.",
     "Rules:",
@@ -373,7 +390,6 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
     "- Avoid long lists unless asked.",
     "- Do not be clingy or overly emotional.",
     "- Do not send proactive messages or nudges.",
-    "- If the user asks about focus lock or mode, answer using the Context header.",
   ].join("\n");
 }
 
