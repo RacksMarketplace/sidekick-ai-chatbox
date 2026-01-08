@@ -5,14 +5,19 @@ import fs from "fs";
 import { execFile } from "child_process";
 import { promisify } from "util";
 
-const { app, BrowserWindow, globalShortcut, ipcMain, screen, powerMonitor } = electron;
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, powerMonitor, desktopCapturer } =
+  electron;
 
 type PrimaryMode = "serious" | "active" | "idle";
 type EffectiveMode = "serious" | "active" | "idle";
 type AppCategory = "work" | "casual" | "unknown";
+type ChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 type ChatMessage = {
   role: "system" | "user" | "assistant";
-  content: string;
+  content: string | ChatContentPart[];
   meta?: {
     type?: "proactive";
   };
@@ -36,6 +41,8 @@ type Memory = {
 };
 
 let mainWindow: electron.BrowserWindow | null = null;
+
+let pendingLookImage: string | null = null;
 
 const execFileAsync = promisify(execFile);
 
@@ -503,6 +510,23 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
   ].join("\n");
 }
 
+async function capturePrimaryDisplay(): Promise<string> {
+  const display = screen.getPrimaryDisplay();
+  const sources = await desktopCapturer.getSources({
+    types: ["screen"],
+    thumbnailSize: {
+      width: display.size.width,
+      height: display.size.height,
+    },
+  });
+  const source =
+    sources.find((entry) => entry.display_id === String(display.id)) ??
+    sources.find((entry) => entry.display_id) ??
+    sources[0];
+  if (!source) throw new Error("No screen source available");
+  return source.thumbnail.toDataURL();
+}
+
 // -------------------- WINDOW --------------------
 
 function createWindow() {
@@ -611,6 +635,7 @@ ipcMain.handle("history:load", async () => readHistory());
 
 ipcMain.handle("history:clear", async () => {
   writeHistory([]);
+  pendingLookImage = null;
   return true;
 });
 
@@ -677,6 +702,20 @@ ipcMain.on("proactive:typing", () => {
   noteUserTyping();
 });
 
+// -------------------- IPC: LOOK AT THIS --------------------
+
+ipcMain.handle("look:request", async () => {
+  if (modeState.effectiveMode !== "active") {
+    return { ok: false, reason: "not-allowed" as const };
+  }
+  if (pendingLookImage) {
+    return { ok: false, reason: "already-pending" as const };
+  }
+  const imageUrl = await capturePrimaryDisplay();
+  pendingLookImage = imageUrl;
+  return { ok: true as const };
+});
+
 // -------------------- IPC: AI CHAT --------------------
 
 ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
@@ -696,10 +735,65 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
   const mem = readMemory();
   const systemPrompt = buildSystemPrompt(modeState, mem);
 
-  const payload: ChatMessage[] = [
-    { role: "system", content: systemPrompt },
-    ...messages.filter((m) => m.role !== "system" && m.meta?.type !== "proactive"),
-  ];
+  const oneShotImage = modeState.effectiveMode === "active" ? pendingLookImage : null;
+  pendingLookImage = null;
+
+  const filteredMessages = messages.filter(
+    (m) => m.role !== "system" && m.meta?.type !== "proactive"
+  );
+
+  const payload: ChatMessage[] = [{ role: "system", content: systemPrompt }];
+
+  if (oneShotImage) {
+    payload.push({
+      role: "system",
+      content: [
+        {
+          type: "text",
+          text:
+            "The user provided an image for this next response only. The image is user-provided, " +
+            "one-shot, and does not persist. Do not assume it remains available or refer to past images.",
+        },
+      ],
+    });
+  }
+
+  payload.push(...filteredMessages);
+
+  if (oneShotImage) {
+    const lastUserIndex = [...payload]
+      .map((m, index) => ({ m, index }))
+      .reverse()
+      .find(({ m }) => m.role === "user")?.index;
+
+    const imagePart: ChatContentPart = {
+      type: "image_url",
+      image_url: { url: oneShotImage },
+    };
+
+    if (lastUserIndex !== undefined) {
+      const lastUser = payload[lastUserIndex];
+      const textContent =
+        typeof lastUser.content === "string"
+          ? lastUser.content
+          : lastUser.content
+              .filter((part) => part.type === "text")
+              .map((part) => part.text)
+              .join("\n");
+      payload[lastUserIndex] = {
+        ...lastUser,
+        content: [
+          { type: "text", text: textContent || "Here is what I’m showing you." },
+          imagePart,
+        ],
+      };
+    } else {
+      payload.push({
+        role: "user",
+        content: [{ type: "text", text: "Here is what I’m showing you." }, imagePart],
+      });
+    }
+  }
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",

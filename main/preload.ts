@@ -49,4 +49,5 @@ contextBridge.exposeInMainWorld("electronAPI", {
   },
   reportUserActivity: () => ipcRenderer.send("proactive:activity"),
   reportUserTyping: () => ipcRenderer.send("proactive:typing"),
+  requestLook: () => ipcRenderer.invoke("look:request"),
 });
