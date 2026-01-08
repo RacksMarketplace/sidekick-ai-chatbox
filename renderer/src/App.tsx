@@ -53,7 +53,14 @@ declare global {
       onProactiveMessage: (cb: (message: ChatMessage) => void) => void;
       reportUserActivity: () => void;
       reportUserTyping: () => void;
-      requestLook: () => Promise<{ ok: true } | { ok: false; reason: "not-allowed" | "already-pending" }>;
+      requestLook: () => Promise<
+        | { ok: true; base64: string }
+        | {
+            ok: false;
+            reason: "not-allowed" | "already-pending" | "capture-failed";
+            message: string;
+          }
+      >;
     };
   }
 }
@@ -300,23 +307,18 @@ export default function App() {
         ]);
         return;
       }
-      if (result.reason === "not-allowed") {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: "assistant",
-            content: "I can do that in Hang out, not in Focus or Quiet.",
-          },
-        ]);
-        return;
-      }
+      const fallback =
+        result.reason === "already-pending"
+          ? "I already have a capture queued. Send your next message and I’ll use it."
+          : result.reason === "not-allowed"
+            ? "I can do that in Hang out, not in Focus or Quiet."
+            : "I couldn’t take that capture.";
       setMessages((prev) => [
         ...prev,
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          content: "I can take another look after the next reply.",
+          content: result.message || fallback,
         },
       ]);
     } catch (err: any) {
