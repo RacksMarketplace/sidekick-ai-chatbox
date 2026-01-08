@@ -10,7 +10,13 @@ const { app, BrowserWindow, globalShortcut, ipcMain, screen, powerMonitor } = el
 type PrimaryMode = "serious" | "active" | "idle";
 type EffectiveMode = "serious" | "active" | "idle";
 type AppCategory = "work" | "casual" | "unknown";
-type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+type ChatMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+  meta?: {
+    type?: "proactive";
+  };
+};
 
 type ModeState = {
   primaryMode: PrimaryMode;
@@ -313,6 +319,103 @@ function broadcastMode() {
   mainWindow.webContents.send("mode:update", { ...modeState });
 }
 
+// -------------------- PROACTIVE PRESENCE --------------------
+
+const PROACTIVE_IDLE_THRESHOLD_MS = 12 * 60 * 1000;
+const PROACTIVE_RATE_LIMIT_MS = 50 * 60 * 1000;
+const PROACTIVE_RETRY_MS = 2 * 60 * 1000;
+const PROACTIVE_TYPING_GRACE_MS = 3000;
+
+const PROACTIVE_TEMPLATES = [
+  "I'm here if you want to chat.",
+  "I'm around if you need anything.",
+  "I'll be here if you need me.",
+  "Feel free to pull me in anytime.",
+  "I'm here whenever you want a quick check-in.",
+];
+
+let proactiveTimer: NodeJS.Timeout | null = null;
+let lastProactiveAt = 0;
+let lastProactiveMessage: string | null = null;
+let lastUserActivityAt = Date.now();
+let isUserTyping = false;
+let typingTimer: NodeJS.Timeout | null = null;
+
+function clearProactiveTimer() {
+  if (!proactiveTimer) return;
+  clearTimeout(proactiveTimer);
+  proactiveTimer = null;
+}
+
+function scheduleProactiveCheck(delayMs: number) {
+  clearProactiveTimer();
+  proactiveTimer = setTimeout(() => {
+    proactiveTimer = null;
+    void attemptProactiveMessage();
+  }, delayMs);
+}
+
+function noteUserActivity() {
+  lastUserActivityAt = Date.now();
+  clearProactiveTimer();
+  scheduleProactiveCheck(PROACTIVE_IDLE_THRESHOLD_MS);
+}
+
+function noteUserTyping() {
+  isUserTyping = true;
+  if (typingTimer) clearTimeout(typingTimer);
+  typingTimer = setTimeout(() => {
+    isUserTyping = false;
+  }, PROACTIVE_TYPING_GRACE_MS);
+  noteUserActivity();
+}
+
+function pickProactiveTemplate() {
+  const options = PROACTIVE_TEMPLATES.filter((template) => template !== lastProactiveMessage);
+  const pool = options.length > 0 ? options : PROACTIVE_TEMPLATES;
+  const choice = pool[Math.floor(Math.random() * pool.length)];
+  lastProactiveMessage = choice;
+  return choice;
+}
+
+function canSendProactive(now: number) {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  if (!mainWindow.isVisible()) return false;
+  if (modeState.primaryMode !== "active") return false;
+  if (modeState.effectiveMode !== "active") return false;
+  if (modeState.focusLocked) return false;
+  if (isUserTyping) return false;
+
+  const systemIdleMs = powerMonitor.getSystemIdleTime() * 1000;
+  if (systemIdleMs < PROACTIVE_IDLE_THRESHOLD_MS) return false;
+  if (now - lastUserActivityAt < PROACTIVE_IDLE_THRESHOLD_MS) return false;
+  if (now - lastProactiveAt < PROACTIVE_RATE_LIMIT_MS) return false;
+
+  return true;
+}
+
+async function attemptProactiveMessage() {
+  const now = Date.now();
+  if (!canSendProactive(now)) {
+    const rateLimitRemaining = Math.max(0, PROACTIVE_RATE_LIMIT_MS - (now - lastProactiveAt));
+    scheduleProactiveCheck(Math.max(PROACTIVE_RETRY_MS, rateLimitRemaining));
+    return;
+  }
+
+  const content = pickProactiveTemplate();
+  const proactiveMessage: ChatMessage = { role: "assistant", content, meta: { type: "proactive" } };
+
+  const history = readHistory();
+  writeHistory([...history, proactiveMessage]);
+
+  if (mainWindow) {
+    mainWindow.webContents.send("proactive:message", proactiveMessage);
+  }
+
+  lastProactiveAt = now;
+  scheduleProactiveCheck(PROACTIVE_RATE_LIMIT_MS);
+}
+
 // -------------------- PROMPT ROUTING --------------------
 
 function buildSystemPrompt(state: ModeState, mem: Memory) {
@@ -467,6 +570,9 @@ async function runModeLoop() {
 app.whenReady().then(() => {
   createWindow();
   globalShortcut.register("Control+Shift+Space", toggleWindow);
+  if (mainWindow) {
+    mainWindow.on("focus", () => noteUserActivity());
+  }
 
   const settings = readSettings();
   modeState.primaryMode = settings.primaryMode;
@@ -476,6 +582,7 @@ app.whenReady().then(() => {
   broadcastMode();
 
   runModeLoop();
+  scheduleProactiveCheck(PROACTIVE_IDLE_THRESHOLD_MS);
   setInterval(() => {
     void runModeLoop();
   }, MODE_BROADCAST_INTERVAL_MS);
@@ -536,6 +643,7 @@ ipcMain.handle("mode:setPrimary", async (_event, nextMode: PrimaryMode) => {
   modeState.effectiveMode = next.mode;
   modeState.effectiveReason = next.reason;
   broadcastMode();
+  noteUserActivity();
   return { ...modeState };
 });
 
@@ -545,6 +653,7 @@ ipcMain.handle("mode:toggleFocusLock", async () => {
   modeState.effectiveMode = next.mode;
   modeState.effectiveReason = next.reason;
   broadcastMode();
+  noteUserActivity();
   return { ...modeState };
 });
 
@@ -554,7 +663,18 @@ ipcMain.handle("mode:userSent", async () => {
   modeState.effectiveMode = next.mode;
   modeState.effectiveReason = next.reason;
   broadcastMode();
+  noteUserActivity();
   return { ...modeState };
+});
+
+// -------------------- IPC: PROACTIVE PRESENCE --------------------
+
+ipcMain.on("proactive:activity", () => {
+  noteUserActivity();
+});
+
+ipcMain.on("proactive:typing", () => {
+  noteUserTyping();
 });
 
 // -------------------- IPC: AI CHAT --------------------
@@ -578,7 +698,7 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
 
   const payload: ChatMessage[] = [
     { role: "system", content: systemPrompt },
-    ...messages.filter((m) => m.role !== "system"),
+    ...messages.filter((m) => m.role !== "system" && m.meta?.type !== "proactive"),
   ];
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {

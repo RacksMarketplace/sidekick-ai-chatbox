@@ -3,7 +3,13 @@ import { contextBridge, ipcRenderer } from "electron";
 type PrimaryMode = "serious" | "active" | "idle";
 type EffectiveMode = "serious" | "active" | "idle";
 type AppCategory = "work" | "casual" | "unknown";
-type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+type ChatMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+  meta?: {
+    type?: "proactive";
+  };
+};
 
 type ModeState = {
   primaryMode: PrimaryMode;
@@ -38,4 +44,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onModeUpdate: (cb: (state: ModeState) => void) => {
     ipcRenderer.on("mode:update", (_event, state: ModeState) => cb(state));
   },
+  onProactiveMessage: (cb: (message: ChatMessage) => void) => {
+    ipcRenderer.on("proactive:message", (_event, message: ChatMessage) => cb(message));
+  },
+  reportUserActivity: () => ipcRenderer.send("proactive:activity"),
+  reportUserTyping: () => ipcRenderer.send("proactive:typing"),
 });

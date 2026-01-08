@@ -21,9 +21,18 @@ type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  meta?: {
+    type?: "proactive";
+  };
 };
 
-type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+type ChatMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+  meta?: {
+    type?: "proactive";
+  };
+};
 
 declare global {
   interface Window {
@@ -41,6 +50,9 @@ declare global {
       toggleFocusLock: () => Promise<ModeState>;
       markUserSent: () => Promise<ModeState>;
       onModeUpdate: (cb: (state: ModeState) => void) => void;
+      onProactiveMessage: (cb: (message: ChatMessage) => void) => void;
+      reportUserActivity: () => void;
+      reportUserTyping: () => void;
     };
   }
 }
@@ -151,6 +163,7 @@ export default function App() {
             id: crypto.randomUUID(),
             role: m.role as "user" | "assistant",
             content: m.content,
+            meta: m.meta,
           }));
         setMessages(ui);
       } catch (e: any) {
@@ -176,6 +189,18 @@ export default function App() {
       } catch (e: any) {
         setFatal(`Mode subscription failed: ${e?.message ?? String(e)}`);
       }
+
+      try {
+        api.onProactiveMessage((message) => {
+          if (message.role !== "assistant") return;
+          setMessages((prev) => [
+            ...prev,
+            { id: crypto.randomUUID(), role: "assistant", content: message.content, meta: message.meta },
+          ]);
+        });
+      } catch (e: any) {
+        setFatal(`Proactive subscription failed: ${e?.message ?? String(e)}`);
+      }
     })();
   }, [api]);
 
@@ -196,6 +221,7 @@ export default function App() {
         { id: crypto.randomUUID(), role: "assistant", content: reply },
       ]);
       setInput("");
+      api.reportUserActivity?.();
       return;
     }
 
@@ -213,7 +239,11 @@ export default function App() {
     try {
       await api.markUserSent();
 
-      const payload: ChatMessage[] = nextUI.map((m) => ({ role: m.role, content: m.content }));
+      const payload: ChatMessage[] = nextUI.map((m) => ({
+        role: m.role,
+        content: m.content,
+        meta: m.meta,
+      }));
       const reply = await api.chat(payload);
 
       setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "assistant", content: reply }]);
@@ -368,7 +398,10 @@ export default function App() {
         <input
           value={rememberText}
           onChange={(e) => setRememberText(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && rememberFact()}
+          onKeyDown={(e) => {
+            api?.reportUserTyping();
+            if (e.key === "Enter") rememberFact();
+          }}
           placeholder="Remember this (persistent)…"
           style={{
             flex: 1,
@@ -446,7 +479,10 @@ export default function App() {
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+          onKeyDown={(e) => {
+            api?.reportUserTyping();
+            if (e.key === "Enter") sendMessage();
+          }}
           placeholder="Type a message…"
           style={{
             flex: 1,
