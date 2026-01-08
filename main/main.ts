@@ -278,7 +278,7 @@ const modeState: ModeState = {
   appCategory: "unknown",
 };
 
-const IDLE_THRESHOLD_MS = 2 * 60 * 1000; // idle >= 2m => idle
+const IDLE_THRESHOLD_MS = 1 * 60 * 1000; // idle >= 1m => idle
 const SERIOUS_AFTER_SEND_MS = 2 * 60 * 1000; // after user sends => serious for 2m
 const MODE_BROADCAST_INTERVAL_MS = 1500;
 
@@ -321,7 +321,7 @@ function broadcastMode() {
 
 // -------------------- PROACTIVE PRESENCE --------------------
 
-const PROACTIVE_IDLE_THRESHOLD_MS = 12 * 60 * 1000;
+const PROACTIVE_IDLE_THRESHOLD_MS = 3 * 60 * 1000;
 const PROACTIVE_RATE_LIMIT_MS = 50 * 60 * 1000;
 const PROACTIVE_RETRY_MS = 2 * 60 * 1000;
 const PROACTIVE_TYPING_GRACE_MS = 3000;
