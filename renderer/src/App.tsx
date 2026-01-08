@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 
-type Mode = "playful" | "serious";
+type PrimaryMode = "serious" | "active" | "idle";
+type EffectiveMode = "serious" | "active" | "idle";
 type ModeState = {
-  mode: Mode;
+  primaryMode: PrimaryMode;
+  effectiveMode: EffectiveMode;
+  effectiveReason: string;
   idleMs: number;
   isIdle: boolean;
   focusLocked: boolean;
@@ -34,6 +37,7 @@ declare global {
       addMemoryFact: (fact: string) => Promise<Memory>;
 
       getMode: () => Promise<ModeState>;
+      setPrimaryMode: (mode: PrimaryMode) => Promise<ModeState>;
       toggleFocusLock: () => Promise<ModeState>;
       markUserSent: () => Promise<ModeState>;
       onModeUpdate: (cb: (state: ModeState) => void) => void;
@@ -55,7 +59,9 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   const [modeState, setModeState] = useState<ModeState>({
-    mode: "serious",
+    primaryMode: "active",
+    effectiveMode: "active",
+    effectiveReason: "primary mode active",
     idleMs: 0,
     isIdle: false,
     focusLocked: false,
@@ -65,18 +71,30 @@ export default function App() {
   const [memory, setMemory] = useState<Memory>({ updatedAt: Date.now(), facts: [] });
   const [rememberText, setRememberText] = useState("");
 
-  const modeLabel = useMemo(() => {
-    if (modeState.focusLocked) return "Focus (locked)";
-    return modeState.mode === "serious" ? "Work" : "Play";
-  }, [modeState.focusLocked, modeState.mode]);
+  const primaryLabel = useMemo(() => {
+    if (modeState.primaryMode === "serious") return "Serious";
+    if (modeState.primaryMode === "idle") return "Idle";
+    return "Active";
+  }, [modeState.primaryMode]);
+
+  const effectiveLabel = useMemo(() => {
+    if (modeState.effectiveMode === "serious") return "Serious";
+    if (modeState.effectiveMode === "idle") return "Idle";
+    return "Active";
+  }, [modeState.effectiveMode]);
 
   // If preload bridge isn't available, show a useful message instead of white screen
   useEffect(() => {
     if (!api) {
-      setFatal(
-        "electronAPI is missing. This usually means preload.js failed to load, or you're viewing the Vite browser tab instead of the Electron window."
-      );
+      const isElectron = navigator.userAgent.includes("Electron");
+      if (isElectron) {
+        setFatal(
+          "electronAPI is missing. This usually means preload.js failed to load, or you're viewing the Vite browser tab instead of the Electron window."
+        );
+      }
+      return;
     }
+    setFatal(null);
   }, [api]);
 
   // Load history + memory + mode safely
@@ -164,6 +182,12 @@ export default function App() {
     setModeState(next);
   }
 
+  async function setPrimaryMode(nextMode: PrimaryMode) {
+    if (!api) return;
+    const next = await api.setPrimaryMode(nextMode);
+    setModeState(next);
+  }
+
   async function rememberFact() {
     if (!api) return;
     const text = rememberText.trim();
@@ -191,11 +215,39 @@ export default function App() {
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <div style={{ fontSize: 14, opacity: 0.9 }}>Sidekick</div>
           <div style={{ fontSize: 12, opacity: 0.65 }}>
-            Mode: <b>{modeLabel}</b> · Idle: {msToMin(modeState.idleMs)}m
+            Primary: <b>{primaryLabel}</b> · Effective: <b>{effectiveLabel}</b>{" "}
+            <span style={{ opacity: 0.75 }}>({modeState.effectiveReason})</span> · Idle:{" "}
+            {msToMin(modeState.idleMs)}m
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {([
+              { value: "serious", label: "Serious" },
+              { value: "active", label: "Active" },
+              { value: "idle", label: "Idle" },
+            ] as const).map((option) => (
+              <button
+                key={option.value}
+                onClick={() => setPrimaryMode(option.value)}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(255,255,255,0.15)",
+                  background:
+                    modeState.primaryMode === option.value
+                      ? "rgba(79,140,255,0.35)"
+                      : "rgba(255,255,255,0.06)",
+                  color: "#fff",
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
           <button
             onClick={toggleFocusLock}
             style={{

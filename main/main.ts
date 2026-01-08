@@ -7,12 +7,15 @@ import { promisify } from "util";
 
 const { app, BrowserWindow, globalShortcut, ipcMain, screen, powerMonitor } = electron;
 
-type Mode = "playful" | "serious";
+type PrimaryMode = "serious" | "active" | "idle";
+type EffectiveMode = "serious" | "active" | "idle";
 type AppCategory = "work" | "casual" | "unknown";
 type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
 type ModeState = {
-  mode: Mode;
+  primaryMode: PrimaryMode;
+  effectiveMode: EffectiveMode;
+  effectiveReason: string;
   idleMs: number;
   isIdle: boolean;
   focusLocked: boolean;
@@ -90,6 +93,41 @@ function readMemory(): Memory {
 function writeMemory(mem: Memory) {
   const next: Memory = { ...mem, updatedAt: Date.now() };
   fs.writeFileSync(getMemoryPath(), JSON.stringify(next, null, 2), "utf-8");
+}
+
+// -------------------- SETTINGS (PERSISTENT) --------------------
+
+type Settings = {
+  primaryMode: PrimaryMode;
+};
+
+const DEFAULT_PRIMARY_MODE: PrimaryMode = "active";
+
+function getSettingsPath() {
+  return path.join(getDataDir(), "settings.json");
+}
+
+function isPrimaryMode(value: unknown): value is PrimaryMode {
+  return value === "serious" || value === "active" || value === "idle";
+}
+
+function readSettings(): Settings {
+  try {
+    const p = getSettingsPath();
+    if (!fs.existsSync(p)) return { primaryMode: DEFAULT_PRIMARY_MODE };
+    const raw = fs.readFileSync(p, "utf-8");
+    const parsed = JSON.parse(raw);
+    const primaryMode = isPrimaryMode(parsed?.primaryMode)
+      ? parsed.primaryMode
+      : DEFAULT_PRIMARY_MODE;
+    return { primaryMode };
+  } catch {
+    return { primaryMode: DEFAULT_PRIMARY_MODE };
+  }
+}
+
+function writeSettings(settings: Settings) {
+  fs.writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2), "utf-8");
 }
 
 // -------------------- ACTIVE APP DETECTION --------------------
@@ -220,10 +258,12 @@ async function refreshActiveApp() {
 // - Active app process name only (no window content)
 // - User can lock focus manually
 // - Recently chatted => serious for a while
-// - Idle => playful
+// - Idle => idle
 
 const modeState: ModeState = {
-  mode: "serious",
+  primaryMode: DEFAULT_PRIMARY_MODE,
+  effectiveMode: "active",
+  effectiveReason: "primary mode active",
   idleMs: 0,
   isIdle: false,
   focusLocked: false,
@@ -232,28 +272,40 @@ const modeState: ModeState = {
   appCategory: "unknown",
 };
 
-const IDLE_THRESHOLD_MS = 2 * 60 * 1000; // idle >= 2m => playful
+const IDLE_THRESHOLD_MS = 2 * 60 * 1000; // idle >= 2m => idle
 const SERIOUS_AFTER_SEND_MS = 2 * 60 * 1000; // after user sends => serious for 2m
 const MODE_BROADCAST_INTERVAL_MS = 1500;
 
-function computeMode(now: number): Mode {
+function computeEffectiveMode(now: number) {
   const idleMs = powerMonitor.getSystemIdleTime() * 1000;
   modeState.idleMs = idleMs;
   modeState.isIdle = idleMs >= IDLE_THRESHOLD_MS;
 
-  if (modeState.focusLocked) return "serious";
+  if (modeState.primaryMode === "idle") {
+    return { mode: "idle" as const, reason: "primary mode set to idle" };
+  }
+
+  if (modeState.primaryMode === "serious") {
+    return { mode: "serious" as const, reason: "primary mode set to serious" };
+  }
+
+  if (modeState.focusLocked) return { mode: "serious" as const, reason: "focus lock enabled" };
 
   const recentlySent =
     modeState.lastUserSendAt > 0 && now - modeState.lastUserSendAt < SERIOUS_AFTER_SEND_MS;
-  if (recentlySent) return "serious";
+  if (recentlySent) return { mode: "serious" as const, reason: "recent activity" };
 
-  if (modeState.appCategory === "work") return "serious";
-  if (modeState.appCategory === "casual") return "playful";
+  if (modeState.appCategory === "work") {
+    return { mode: "serious" as const, reason: "work app detected" };
+  }
+  if (modeState.appCategory === "casual") {
+    return { mode: "active" as const, reason: "casual app detected" };
+  }
 
-  if (modeState.isIdle) return "playful";
+  if (modeState.isIdle) return { mode: "idle" as const, reason: "system idle" };
 
-  // Default while active: serious (work-friendly)
-  return "serious";
+  // Default while active: companion-friendly
+  return { mode: "active" as const, reason: "primary mode active" };
 }
 
 function broadcastMode() {
@@ -263,9 +315,11 @@ function broadcastMode() {
 
 // -------------------- PROMPT ROUTING --------------------
 
-function buildSystemPrompt(mode: Mode, state: ModeState, mem: Memory) {
+function buildSystemPrompt(state: ModeState, mem: Memory) {
   const contextHeader = [
-    `Context: mode=${state.mode}`,
+    `Context: primaryMode=${state.primaryMode}`,
+    `effectiveMode=${state.effectiveMode}`,
+    `effectiveReason=${state.effectiveReason}`,
     `focusLocked=${state.focusLocked}`,
     `idleMinutes=${Math.floor(state.idleMs / 60000)}`,
     `activeApp=${state.activeApp ?? "unknown"}`,
@@ -277,7 +331,7 @@ function buildSystemPrompt(mode: Mode, state: ModeState, mem: Memory) {
       ? `Memory (persistent facts):\n- ${mem.facts.join("\n- ")}`
       : "Memory (persistent facts):\n- (none yet)";
 
-  if (state.focusLocked || mode === "serious") {
+  if (state.effectiveMode === "serious") {
     return [
       contextHeader,
       memoryBlock,
@@ -287,8 +341,24 @@ function buildSystemPrompt(mode: Mode, state: ModeState, mem: Memory) {
       "- Be concise and structured.",
       "- Prefer bullet points and steps.",
       "- No jokes or playful banter unless the user explicitly asks.",
+      "- Do not send proactive messages or nudges.",
       "- If the user asks about focus lock or mode, answer using the Context header.",
       "- If something is ambiguous, ask ONE clarifying question.",
+    ].join("\n");
+  }
+
+  if (state.effectiveMode === "idle") {
+    return [
+      contextHeader,
+      memoryBlock,
+      "",
+      "You are Sidekick, a calm, quiet desktop assistant.",
+      "Rules:",
+      "- Respond only when the user explicitly asks.",
+      "- Keep responses minimal, calm, and low-energy.",
+      "- Do not send proactive messages, nudges, or suggestions.",
+      "- Avoid jokes or playful banter unless the user explicitly asks.",
+      "- If the user asks about focus lock or mode, answer using the Context header.",
     ].join("\n");
   }
 
@@ -302,6 +372,7 @@ function buildSystemPrompt(mode: Mode, state: ModeState, mem: Memory) {
     "- Offer small, low-pressure suggestions.",
     "- Avoid long lists unless asked.",
     "- Do not be clingy or overly emotional.",
+    "- Do not send proactive messages or nudges.",
     "- If the user asks about focus lock or mode, answer using the Context header.",
   ].join("\n");
 }
@@ -362,9 +433,10 @@ function toggleWindow() {
 async function runModeLoop() {
   await refreshActiveApp();
   const now = Date.now();
-  const next = computeMode(now);
-  if (next !== modeState.mode) {
-    modeState.mode = next;
+  const next = computeEffectiveMode(now);
+  if (next.mode !== modeState.effectiveMode || next.reason !== modeState.effectiveReason) {
+    modeState.effectiveMode = next.mode;
+    modeState.effectiveReason = next.reason;
   }
   broadcastMode();
 }
@@ -373,13 +445,29 @@ app.whenReady().then(() => {
   createWindow();
   globalShortcut.register("Control+Shift+Space", toggleWindow);
 
+  const settings = readSettings();
+  modeState.primaryMode = settings.primaryMode;
+  const next = computeEffectiveMode(Date.now());
+  modeState.effectiveMode = next.mode;
+  modeState.effectiveReason = next.reason;
+  broadcastMode();
+
   runModeLoop();
   setInterval(() => {
     void runModeLoop();
   }, MODE_BROADCAST_INTERVAL_MS);
 
   powerMonitor.on("lock-screen", () => {
-    modeState.mode = "playful";
+    if (modeState.primaryMode === "active") {
+      modeState.effectiveMode = "idle";
+      modeState.effectiveReason = "screen locked";
+    } else if (modeState.primaryMode === "serious") {
+      modeState.effectiveMode = "serious";
+      modeState.effectiveReason = "primary mode set to serious";
+    } else {
+      modeState.effectiveMode = "idle";
+      modeState.effectiveReason = "primary mode set to idle";
+    }
     broadcastMode();
   });
 });
@@ -417,16 +505,31 @@ ipcMain.handle("memory:addFact", async (_e, fact: string) => {
 
 ipcMain.handle("mode:get", async () => ({ ...modeState }));
 
+ipcMain.handle("mode:setPrimary", async (_event, nextMode: PrimaryMode) => {
+  if (!isPrimaryMode(nextMode)) return { ...modeState };
+  modeState.primaryMode = nextMode;
+  writeSettings({ primaryMode: nextMode });
+  const next = computeEffectiveMode(Date.now());
+  modeState.effectiveMode = next.mode;
+  modeState.effectiveReason = next.reason;
+  broadcastMode();
+  return { ...modeState };
+});
+
 ipcMain.handle("mode:toggleFocusLock", async () => {
   modeState.focusLocked = !modeState.focusLocked;
-  modeState.mode = computeMode(Date.now());
+  const next = computeEffectiveMode(Date.now());
+  modeState.effectiveMode = next.mode;
+  modeState.effectiveReason = next.reason;
   broadcastMode();
   return { ...modeState };
 });
 
 ipcMain.handle("mode:userSent", async () => {
   modeState.lastUserSendAt = Date.now();
-  modeState.mode = computeMode(Date.now());
+  const next = computeEffectiveMode(Date.now());
+  modeState.effectiveMode = next.mode;
+  modeState.effectiveReason = next.reason;
   broadcastMode();
   return { ...modeState };
 });
@@ -439,14 +542,16 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
 
   // mark activity
   modeState.lastUserSendAt = Date.now();
-  modeState.mode = computeMode(Date.now());
+  const nextMode = computeEffectiveMode(Date.now());
+  modeState.effectiveMode = nextMode.mode;
+  modeState.effectiveReason = nextMode.reason;
   broadcastMode();
 
   // Persist current chat thread (excluding system)
   writeHistory(messages.filter((m) => m.role !== "system"));
 
   const mem = readMemory();
-  const systemPrompt = buildSystemPrompt(modeState.mode, modeState, mem);
+  const systemPrompt = buildSystemPrompt(modeState, mem);
 
   const payload: ChatMessage[] = [
     { role: "system", content: systemPrompt },
@@ -461,7 +566,8 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
     },
     body: JSON.stringify({
       model: "gpt-4o-mini",
-      temperature: modeState.mode === "playful" ? 0.9 : 0.4,
+      temperature:
+        modeState.effectiveMode === "active" ? 0.9 : modeState.effectiveMode === "idle" ? 0.2 : 0.4,
       messages: payload,
     }),
   });
