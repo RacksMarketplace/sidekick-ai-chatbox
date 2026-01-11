@@ -783,29 +783,6 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
     return "I can do that in Hang out, not in Focus or Quiet.";
   }
 
-  const inputMessages: ResponseInputMessage[] = [
-    {
-      role: "system",
-      content: [{ type: "input_text", text: systemPrompt }],
-    },
-  ];
-
-  if (wantsVision) {
-    inputMessages.push({
-      role: "system",
-      content: [
-        {
-          type: "input_text",
-          text:
-            "The user provided an image for this next response only. The image is user-provided, " +
-            "one-shot, and does not persist. Do not assume it remains available or refer to past images. " +
-            "If an image is attached, do not claim you cannot see it. " +
-            "Begin your response with: \"Okay, I’ll take a quick look.\"",
-        },
-      ],
-    });
-  }
-
   const latestUserIndex = [...filteredMessages]
     .map((m, index) => ({ m, index }))
     .reverse()
@@ -819,6 +796,31 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
       return "I couldn't capture the screen. Please try again.";
     }
   }
+
+  const payload: ChatMessage[] = [{ role: "system", content: systemPrompt }];
+
+  filteredMessages.forEach((message, index) => {
+    const textContent =
+      typeof message.content === "string"
+        ? message.content
+        : message.content
+            .filter((part) => part.type === "text")
+            .map((part) => part.text)
+            .join("\n");
+
+    if (imageBase64 && index === latestUserIndex) {
+      payload.push({
+        role: "user",
+        content: [
+          { type: "text", text: textContent || "Here is what I’m showing you." },
+          { type: "image_url", image_url: { url: `data:image/png;base64,${imageBase64}` } },
+        ],
+      });
+      return;
+    }
+
+    payload.push({ role: message.role, content: textContent || " " });
+  });
 
   filteredMessages.forEach((message, index) => {
     const textContent =
