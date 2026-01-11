@@ -510,6 +510,16 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
   ].join("\n");
 }
 
+function getThumbnailSize(
+  width: number,
+  height: number,
+  maxWidth: number,
+  maxHeight: number
+): { width: number; height: number } {
+  const ratio = Math.min(maxWidth / width, maxHeight / height, 1);
+  return { width: Math.round(width * ratio), height: Math.round(height * ratio) };
+}
+
 async function capturePrimaryDisplay(): Promise<string> {
   const display = screen.getPrimaryDisplay();
   const maxWidth = 1280;
@@ -777,7 +787,7 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
           type: "text",
           text:
             "The user provided an image for this next response only. The image is user-provided, " +
-            "one-shot, and does not persist. Do not assume it remains available or refer to past images.",
+            "one-shot, and does not persist. Do not assume continued visual access or refer to past images.",
         },
       ],
     });
