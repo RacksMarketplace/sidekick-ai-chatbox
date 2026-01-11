@@ -735,12 +735,10 @@ function maybeBuildProactiveMessage(
 
   const preferredCategory = trigger === "memory-added" && canUseMemory ? "memory" : null;
 
-  const available = [
-    "ambient",
-    ...(canUseMemory ? ["memory"] : []),
-    ...(canUseEmotional ? ["emotional"] : []),
-    ...(canInvite ? ["invitation"] : []),
-  ] satisfies ProactivityCategory[];
+  const available: ProactivityCategory[] = ["ambient"];
+  if (canUseMemory) available.push("memory");
+  if (canUseEmotional) available.push("emotional");
+  if (canInvite) available.push("invitation");
 
   if (available.length === 0) return null;
 
