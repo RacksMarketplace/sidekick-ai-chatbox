@@ -25,7 +25,9 @@ type ChatMessage = {
 
 type ResponseInputPart =
   | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } };
+  | { type: "image_url"; image_url: { url: string } }
+  | { type: "input_text"; text: string }
+  | { type: "input_image"; image_url: string };
 
 type ResponseInputMessage = {
   role: "system" | "user" | "assistant";
