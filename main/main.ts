@@ -23,15 +23,6 @@ type ChatMessage = {
   };
 };
 
-type ResponseInputPart =
-  | { type: "input_text"; text: string }
-  | { type: "input_image"; image_url: string };
-
-type ResponseInputMessage = {
-  role: "system" | "user" | "assistant";
-  content: ResponseInputPart[];
-};
-
 type ModeState = {
   primaryMode: PrimaryMode;
   effectiveMode: EffectiveMode;
@@ -283,7 +274,7 @@ async function refreshActiveApp() {
 const modeState: ModeState = {
   primaryMode: DEFAULT_PRIMARY_MODE,
   effectiveMode: "active",
-  effectiveReason: "primary setting: Hang out",
+  effectiveReason: "Primary setting: Hang out",
   idleMs: 0,
   isIdle: false,
   focusLocked: false,
@@ -302,30 +293,30 @@ function computeEffectiveMode(now: number) {
   modeState.isIdle = idleMs >= IDLE_THRESHOLD_MS;
 
   if (modeState.primaryMode === "idle") {
-    return { mode: "idle" as const, reason: "primary setting: Quiet" };
+    return { mode: "idle" as const, reason: "Primary setting: Quiet" };
   }
 
   if (modeState.primaryMode === "serious") {
-    return { mode: "serious" as const, reason: "primary setting: Focus" };
+    return { mode: "serious" as const, reason: "Primary setting: Focus" };
   }
 
-  if (modeState.focusLocked) return { mode: "serious" as const, reason: "focus lock enabled" };
+  if (modeState.focusLocked) return { mode: "serious" as const, reason: "Focus lock enabled" };
 
   const recentlySent =
     modeState.lastUserSendAt > 0 && now - modeState.lastUserSendAt < SERIOUS_AFTER_SEND_MS;
-  if (recentlySent) return { mode: "serious" as const, reason: "recent activity" };
+  if (recentlySent) return { mode: "serious" as const, reason: "Recent activity" };
 
   if (modeState.appCategory === "work") {
-    return { mode: "serious" as const, reason: "work app detected" };
+    return { mode: "serious" as const, reason: "Work app detected" };
   }
   if (modeState.appCategory === "casual") {
-    return { mode: "active" as const, reason: "casual app detected" };
+    return { mode: "active" as const, reason: "Casual app detected" };
   }
 
-  if (modeState.isIdle) return { mode: "idle" as const, reason: "system inactive" };
+  if (modeState.isIdle) return { mode: "idle" as const, reason: "System inactive" };
 
   // Default while active: companion-friendly
-  return { mode: "active" as const, reason: "primary setting: Hang out" };
+  return { mode: "active" as const, reason: "Primary setting: Hang out" };
 }
 
 function broadcastMode() {
@@ -341,11 +332,11 @@ const PROACTIVE_RETRY_MS = 2 * 60 * 1000;
 const PROACTIVE_TYPING_GRACE_MS = 3000;
 
 const PROACTIVE_TEMPLATES = [
-  "I'm here if you want to chat.",
-  "I'm around if you need anything.",
-  "I'll be here if you need me.",
+  "Mm. I'm around if you want to chat.",
+  "Gotcha. I'm here if you need a quick check-in.",
+  "I'm here if you want a quick break.",
   "Feel free to pull me in anytime.",
-  "I'm here whenever you want a quick check-in.",
+  "I'm around if you want a second opinion.",
 ];
 
 let proactiveTimer: NodeJS.Timeout | null = null;
@@ -462,8 +453,15 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
     "- When asked about your setting or behavior, REPORT them exactly as stated.",
     "- If unsure, defer to the UI state.",
     '- Never use the word "mode" with the user.',
+    "- No emojis or roleplay actions.",
+    "- Keep responses short unless the user asks for more depth.",
     "- Quiet is a behavior policy: no proactive messages, minimal tone, still accurate and calm responses.",
     '- When describing Quiet, say: "I won’t initiate conversation, but I can respond if you ask."',
+    "",
+    "Vision rules:",
+    "- If no image is attached in this request, you do not have visual access.",
+    "- If an image is attached, acknowledge it briefly in one sentence, then answer.",
+    "- Never claim visual access unless an image is attached.",
   ].join("\n");
 
   const memoryBlock =
@@ -479,10 +477,10 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
       "",
       "You are Sidekick in Focus.",
       "Rules:",
-      "- Be concise and structured.",
-      "- Prefer bullet points and steps.",
+      "- Be crisp, structured, and precise.",
+      "- Prefer short bullet points or steps.",
       "- No jokes or playful banter unless the user explicitly asks.",
-      "- Do not send proactive messages or nudges.",
+      "- Avoid long preambles.",
       "- If something is ambiguous, ask ONE clarifying question.",
     ].join("\n");
   }
@@ -499,6 +497,7 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
       "- Keep responses minimal, calm, and low-energy.",
       "- Do not send proactive messages, nudges, or suggestions.",
       "- Avoid jokes or playful banter unless the user explicitly asks.",
+      "- Keep it short, even if you could say more.",
     ].join("\n");
   }
 
@@ -509,11 +508,11 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
     "",
     "You are Sidekick in Hang out.",
     "Rules:",
-    "- Keep it short, light, and friendly.",
+    "- Keep it short, warm, and friendly.",
     "- Light banter is allowed if the user seems open to it.",
     "- Avoid long lists unless asked.",
     "- Do not be clingy or overly emotional.",
-    "- Do not send proactive messages or nudges.",
+    "- Occasional short openers like “Mm.” or “Gotcha.” are fine, but use sparingly.",
   ].join("\n");
 }
 
@@ -562,24 +561,39 @@ function getLatestUserText(messages: ChatMessage[]) {
     .join("\n");
 }
 
-function hasExplicitVisionIntent(text: string) {
-  const normalized = text.toLowerCase();
-  const patterns = [
+function shouldUseVision(userText: string) {
+  const normalized = userText.toLowerCase().trim();
+  if (!normalized) return false;
+
+  const hasCodeFence = /```/.test(userText);
+  if (normalized.includes("look at this code") && hasCodeFence) return false;
+
+  const strongPhrases = [
+    "take a look",
     "look at my screen",
     "look at the screen",
-    "look at this",
-    "take a look",
+    "look at my display",
     "see my screen",
     "see the screen",
-    "can you see this",
-    "what's on my screen",
-    "whats on my screen",
     "can you see my screen",
     "can you look at my screen",
     "check my screen",
+    "what do you see",
     "what am i doing",
+    "what am i looking at",
+    "screenshot",
   ];
-  return patterns.some((pattern) => normalized.includes(pattern));
+
+  if (strongPhrases.some((phrase) => normalized.includes(phrase))) return true;
+
+  const hasLookAtThis =
+    normalized.includes("look at this") || normalized.includes("look at this message");
+  if (hasLookAtThis) {
+    if (normalized.includes("screen") || normalized.includes("display")) return true;
+    return userText.trim().length <= 120;
+  }
+
+  return false;
 }
 
 // -------------------- WINDOW --------------------
@@ -669,13 +683,13 @@ app.whenReady().then(() => {
   powerMonitor.on("lock-screen", () => {
     if (modeState.primaryMode === "active") {
       modeState.effectiveMode = "idle";
-      modeState.effectiveReason = "screen locked";
+      modeState.effectiveReason = "Screen locked";
     } else if (modeState.primaryMode === "serious") {
       modeState.effectiveMode = "serious";
-      modeState.effectiveReason = "primary setting: Focus";
+      modeState.effectiveReason = "Primary setting: Focus";
     } else {
       modeState.effectiveMode = "idle";
-      modeState.effectiveReason = "primary setting: Quiet";
+      modeState.effectiveReason = "Primary setting: Quiet";
     }
     broadcastMode();
   });
@@ -780,10 +794,22 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
   );
 
   const latestUserText = getLatestUserText(filteredMessages);
-  const wantsVision = hasExplicitVisionIntent(latestUserText);
+  const wantsVision = shouldUseVision(latestUserText);
+  const visionAllowed =
+    wantsVision &&
+    modeState.primaryMode === "active" &&
+    modeState.effectiveMode === "active" &&
+    !modeState.focusLocked;
+  const blockedVisionMessage =
+    "I can take a quick look in Hang out. Switch to Hang out and try again.";
 
-  if (wantsVision && modeState.effectiveMode !== "active") {
-    return "I can do that in Hang out, not in Focus or Quiet.";
+  if (wantsVision && !visionAllowed) {
+    const nextHistory: ChatMessage[] = [
+      ...messages.filter((m) => m.role !== "system"),
+      { role: "assistant", content: blockedVisionMessage },
+    ];
+    writeHistory(nextHistory);
+    return blockedVisionMessage;
   }
 
   const latestUserIndex = [...filteredMessages]
@@ -796,11 +822,23 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
     try {
       imageBase64 = await capturePrimaryDisplay();
     } catch (error: any) {
-      return "I couldn't capture the screen. Please try again.";
+      const failureMessage = "I couldn't capture the screen. Please try again.";
+      const nextHistory: ChatMessage[] = [
+        ...messages.filter((m) => m.role !== "system"),
+        { role: "assistant", content: failureMessage },
+      ];
+      writeHistory(nextHistory);
+      return failureMessage;
     }
   }
 
   const payload: ChatMessage[] = [{ role: "system", content: systemPrompt }];
+  if (imageBase64) {
+    payload.push({
+      role: "system",
+      content: "The attached image is one-shot for this response only; do not assume continued visual access.",
+    });
+  }
 
   filteredMessages.forEach((message, index) => {
     const textContent =
