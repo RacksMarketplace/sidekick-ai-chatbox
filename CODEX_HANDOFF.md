@@ -1,4 +1,4 @@
-# CODEX HANDOFF — SIDEKICK BACKBONE v2
+# CODEX HANDOFF — SIDEKICK v2.1
 
 This document defines the project’s non-negotiable constraints, architecture map, and operating rules.
 If a requested change conflicts with this document, it must NOT be implemented.
@@ -7,7 +7,7 @@ If a requested change conflicts with this document, it must NOT be implemented.
 
 ## Project Overview
 
-Sidekick is a calm but alive desktop companion for Electron + Vite + React.
+Sidekick is a lively but grounded desktop companion for Electron + Vite + React.
 It is a presence, not a tool.
 It is helpful, not restrictive.
 It is alive, not creepy.
@@ -26,7 +26,7 @@ npm run dev
 ## Core Principles (NON-NEGOTIABLE)
 
 1) The user is always in control.
-2) One adaptive personality; no focus lock, no gating, no separate personalities.
+2) One unified personality; no modes, no gating, no separate personas.
 3) Explicit beats implicit.
 4) Trust beats cleverness.
 5) Presence beats engagement.
@@ -36,9 +36,9 @@ npm run dev
 ## Architecture Map
 
 **Main process** (`main/main.ts`)
-- Source of truth for context, memory, and vision.
-- Owns OpenAI calls and screenshot capture.
-- Maintains persistent chat history and memory facts.
+- Source of truth for memory and OpenAI calls.
+- Builds the system prompt.
+- Persists chat history and memory facts.
 
 **Preload bridge** (`main/preload.ts`)
 - Minimal IPC surface only.
@@ -46,8 +46,8 @@ npm run dev
 
 **Renderer** (`renderer/src/App.tsx`)
 - UI only.
-- Detects vision intent for UI feedback only ("Looking…" bubble).
-- Never decides whether capture is allowed.
+- Handles image upload, drag/drop, and clipboard paste.
+- Sends image data URLs inside chat messages.
 
 **Persistence**
 - Chat history: `chat_history.json`
@@ -55,33 +55,24 @@ npm run dev
 
 ---
 
-## Vision Rules (CRITICAL)
+## Vision Philosophy (CRITICAL)
 
-Vision is user-invoked only.
+Vision is user-controlled, explicit, and one-shot.
+Trust-first design forbids any surveillance or automation.
 
-Allowed:
-- Explicit user request
-- One-shot screenshot capture
-- Attached to the same request
-- Acknowledged once, then answer
-- Immediate discard (no storage)
-
-Forbidden:
-- Background capture
-- Continuous monitoring
-- Inference-based capture
-- Reuse of screenshots
-- Any claim of visual access without an attached image
-
-If capture fails, the **app** must return a deterministic message without calling the LLM.
+Principles:
+- User provides images directly (upload, drag/drop, or paste).
+- Images are attached to the current message only.
+- No background capture, no continuous monitoring, no inference-based grabs.
+- The assistant never claims visual access without an attached image.
 
 ---
 
-## Memory Rules
+## How Image Vision Works
 
-- Memory is persistent across restarts.
-- Memory is simple facts only.
-- No silent inference. Only user-provided facts are stored.
+- The renderer captures user-selected images and converts them to data URLs.
+- The image is sent inside the Chat Completions message content as `image_url`.
+- The main process passes messages directly to OpenAI and returns the response.
 
 ---
 
@@ -95,9 +86,17 @@ If capture fails, the **app** must return a deterministic message without callin
 
 ---
 
+## Memory Rules
+
+- Memory is persistent across restarts.
+- Memory is simple facts only.
+- No silent inference. Only user-provided facts are stored.
+
+---
+
 ## Safety Boundaries
 
-- No always-on screen capture.
+- No capture APIs or automation.
 - No background vision.
 - No OpenAI Responses API.
 - No hidden restrictions or hidden-state language.
@@ -105,14 +104,14 @@ If capture fails, the **app** must return a deterministic message without callin
 
 ---
 
-## Extending the System (Without Breaking Behavior)
+## Extending Vision Safely Later
 
-When adding features:
-- Keep the single adaptive personality.
-- Never introduce focus locks or gating.
-- Treat vision as one-shot and user-invoked only.
-- Keep proactivity rare and ignorable.
-- Ensure UI remains simple and calm.
+If new vision features are added:
+- Preserve user-controlled inputs only.
+- Keep vision one-shot and per-message.
+- Require explicit user action for every image.
+- Avoid hidden triggers or implicit capture.
+- Keep the IPC surface minimal and auditable.
 
 ---
 
