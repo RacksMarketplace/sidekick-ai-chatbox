@@ -34,6 +34,10 @@ type ChatMessage = {
   };
 };
 
+type LookResponse =
+  | { ok: true; imageBase64: string }
+  | { ok: false; reason: "not-allowed" | "already-pending" | "failed"; message: string };
+
 declare global {
   interface Window {
     electronAPI?: {
