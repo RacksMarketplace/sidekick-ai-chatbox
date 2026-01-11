@@ -24,8 +24,6 @@ type ChatMessage = {
 };
 
 type ResponseInputPart =
-  | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } }
   | { type: "input_text"; text: string }
   | { type: "input_image"; image_url: string };
 
@@ -788,7 +786,7 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
   const inputMessages: ResponseInputMessage[] = [
     {
       role: "system",
-      content: [{ type: "text", text: systemPrompt }],
+      content: [{ type: "input_text", text: systemPrompt }],
     },
   ];
 
@@ -831,12 +829,12 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
             .map((part) => part.text)
             .join("\n");
 
-    const parts: ResponseInputPart[] = [{ type: "text", text: textContent || " " }];
+    const parts: ResponseInputPart[] = [{ type: "input_text", text: textContent || " " }];
 
     if (imageBase64 && index === latestUserIndex) {
       parts.push({
-        type: "image_url",
-        image_url: { url: `data:image/png;base64,${imageBase64}` },
+        type: "input_image",
+        image_url: `data:image/png;base64,${imageBase64}`,
       });
     }
 
