@@ -7,7 +7,8 @@
     "dev:renderer": "cd renderer && npm run dev",
     "build:main": "tsc -p tsconfig.node.json",
     "dev:electron": "wait-on tcp:5173 && npm run build:main && set VITE_DEV_SERVER_URL=http://localhost:5173 && electron .",
-    "dev": "concurrently \"npm:dev:renderer\" \"npm:dev:electron\""
+    "dev": "concurrently \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "postinstall": "npm install --prefix renderer"
   },
   "devDependencies": {
     "concurrently": "^8.2.0",
