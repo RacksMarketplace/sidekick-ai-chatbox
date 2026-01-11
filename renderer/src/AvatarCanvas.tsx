@@ -45,6 +45,35 @@ export default function AvatarCanvas() {
     scene.add(debugMesh);
 
     let vrm: VRM | null = null;
+    let chestNode: THREE.Object3D | null = null;
+    let chestBaseY = 0;
+    let swayTarget: THREE.Object3D | null = null;
+    let swayBaseZ = 0;
+    let blinkSupported = false;
+    let blinkLogged = false;
+    let blinkStartTime = 0;
+    let blinkEndTime = 0;
+    let nextBlinkTime = 0;
+
+    const setBlinkValue = (value: number) => {
+      if (!vrm) return;
+      const vrmAny = vrm as unknown as {
+        blendShapeProxy?: { setValue: (name: string, weight: number) => void };
+        expressionManager?: { setValue: (name: string, weight: number) => void };
+      };
+
+      if (vrmAny.expressionManager?.setValue) {
+        vrmAny.expressionManager.setValue("blink", value);
+        return;
+      }
+      if (vrmAny.blendShapeProxy?.setValue) {
+        vrmAny.blendShapeProxy.setValue("Blink", value);
+      }
+    };
+
+    const scheduleNextBlink = (time: number) => {
+      nextBlinkTime = time + 3 + Math.random() * 4;
+    };
 
     const loader = new GLTFLoader();
     loader.register((parser) => new VRMLoaderPlugin(parser));
@@ -76,6 +105,31 @@ export default function AvatarCanvas() {
         }
 
         vrm = loadedVrm;
+        const humanoid = loadedVrm.humanoid;
+        const possibleChest =
+          humanoid?.getNormalizedBoneNode("chest") ??
+          humanoid?.getNormalizedBoneNode("spine") ??
+          humanoid?.getNormalizedBoneNode("upperChest");
+        if (possibleChest) {
+          chestNode = possibleChest;
+          chestBaseY = chestNode.position.y;
+        }
+
+        swayTarget = loadedVrm.scene;
+        swayBaseZ = swayTarget.rotation.z;
+
+        const vrmAny = loadedVrm as unknown as {
+          blendShapeProxy?: { setValue: (name: string, weight: number) => void };
+          expressionManager?: { setValue: (name: string, weight: number) => void };
+        };
+        blinkSupported = Boolean(
+          vrmAny.expressionManager?.setValue || vrmAny.blendShapeProxy?.setValue
+        );
+        if (!blinkSupported && !blinkLogged) {
+          console.warn("Blink blendshape not available; skipping idle blink.");
+          blinkLogged = true;
+        }
+        scheduleNextBlink(clock.getElapsedTime());
         scene.add(loadedVrm.scene);
         scene.remove(debugMesh);
         debugGeometry.dispose();
@@ -105,6 +159,39 @@ export default function AvatarCanvas() {
     const renderLoop = () => {
       const delta = clock.getDelta();
       if (vrm) {
+        const elapsed = clock.getElapsedTime();
+        const breathAmplitude = 0.02;
+        const breathSpeed = 1.2;
+        if (chestNode) {
+          chestNode.position.y = chestBaseY + Math.sin(elapsed * breathSpeed) * breathAmplitude;
+        }
+
+        const swayAmplitude = 0.03;
+        const swaySpeed = 0.5;
+        if (swayTarget) {
+          swayTarget.rotation.z = swayBaseZ + Math.sin(elapsed * swaySpeed) * swayAmplitude;
+        }
+
+        if (blinkSupported) {
+          if (elapsed >= nextBlinkTime && blinkEndTime === 0) {
+            blinkStartTime = elapsed;
+            blinkEndTime = elapsed + 0.12;
+          }
+
+          if (blinkEndTime > 0) {
+            const progress = (elapsed - blinkStartTime) / (blinkEndTime - blinkStartTime);
+            const clamped = Math.min(Math.max(progress, 0), 1);
+            const blinkValue = clamped < 0.5 ? clamped * 2 : (1 - clamped) * 2;
+            setBlinkValue(blinkValue);
+            if (progress >= 1) {
+              setBlinkValue(0);
+              blinkStartTime = 0;
+              blinkEndTime = 0;
+              scheduleNextBlink(elapsed);
+            }
+          }
+        }
+
         vrm.update(delta);
       }
       renderer.render(scene, camera);
