@@ -57,7 +57,6 @@ declare global {
       onProactiveMessage: (cb: (message: ChatMessage) => void) => void;
       reportUserActivity: () => void;
       reportUserTyping: () => void;
-      requestLook: () => Promise<LookResponse>;
     };
   }
 }
@@ -132,7 +131,6 @@ export default function App() {
 
   const [memory, setMemory] = useState<Memory>({ updatedAt: Date.now(), facts: [] });
   const [rememberText, setRememberText] = useState("");
-  const [lookPending, setLookPending] = useState(false);
 
   const primaryLabel = useMemo(() => {
     return formatModeLabel(modeState.primaryMode);
@@ -260,7 +258,6 @@ export default function App() {
       ]);
     } finally {
       setLoading(false);
-      setLookPending(false);
     }
   }
 
@@ -268,7 +265,6 @@ export default function App() {
     if (!api) return;
     await api.clearHistory();
     setMessages([]);
-    setLookPending(false);
   }
 
   async function toggleFocusLock() {
@@ -290,34 +286,6 @@ export default function App() {
     const mem = await api.addMemoryFact(text);
     setMemory(mem);
     setRememberText("");
-  }
-
-  async function requestLook() {
-    if (!api) return;
-    try {
-      const result = await api.requestLook();
-      if (result.ok) {
-        setLookPending(true);
-        setMessages((prev) => [
-          ...prev,
-          { id: crypto.randomUUID(), role: "assistant", content: "Okay, I’ll take a quick look." },
-        ]);
-        return;
-      }
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: result.message || "I can't do that right now.",
-        },
-      ]);
-    } catch (err: any) {
-      setMessages((prev) => [
-        ...prev,
-        { id: crypto.randomUUID(), role: "assistant", content: `Error: ${err?.message ?? String(err)}` },
-      ]);
-    }
   }
 
   return (
@@ -384,26 +352,6 @@ export default function App() {
             }}
           >
             {modeState.focusLocked ? "Unlock focus" : "Lock focus"}
-          </button>
-
-          <button
-            onClick={requestLook}
-            disabled={!api || lookPending || modeState.effectiveMode !== "active"}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 999,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background:
-                lookPending || modeState.effectiveMode !== "active"
-                  ? "rgba(255,255,255,0.06)"
-                  : "rgba(255,255,255,0.1)",
-              color: "#fff",
-              fontSize: 12,
-              cursor: !api || lookPending || modeState.effectiveMode !== "active" ? "default" : "pointer",
-              opacity: !api || lookPending || modeState.effectiveMode !== "active" ? 0.6 : 1,
-            }}
-          >
-            Look at this
           </button>
 
           <button
