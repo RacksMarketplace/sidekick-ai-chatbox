@@ -568,13 +568,16 @@ function hasExplicitVisionIntent(text: string) {
     "look at my screen",
     "look at the screen",
     "look at this",
+    "take a look",
     "see my screen",
     "see the screen",
+    "can you see this",
     "what's on my screen",
     "whats on my screen",
     "can you see my screen",
     "can you look at my screen",
     "check my screen",
+    "what am i doing",
   ];
   return patterns.some((pattern) => normalized.includes(pattern));
 }
@@ -822,31 +825,7 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
     payload.push({ role: message.role, content: textContent || " " });
   });
 
-  filteredMessages.forEach((message, index) => {
-    const textContent =
-      typeof message.content === "string"
-        ? message.content
-        : message.content
-            .filter((part) => part.type === "text")
-            .map((part) => part.text)
-            .join("\n");
-
-    const parts: ResponseInputPart[] = [{ type: "input_text", text: textContent || " " }];
-
-    if (imageBase64 && index === latestUserIndex) {
-      parts.push({
-        type: "input_image",
-        image_url: `data:image/png;base64,${imageBase64}`,
-      });
-    }
-
-    inputMessages.push({
-      role: message.role,
-      content: parts,
-    });
-  });
-
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -856,14 +835,14 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
       model: "gpt-4o-mini",
       temperature:
         modeState.effectiveMode === "active" ? 0.9 : modeState.effectiveMode === "idle" ? 0.2 : 0.4,
-      input: inputMessages,
+      messages: payload,
     }),
   });
 
   const data: any = await response.json();
   if (!response.ok) throw new Error(data?.error?.message || "OpenAI request failed");
 
-  const assistantText: string = data?.output_text ?? "";
+  const assistantText: string = data?.choices?.[0]?.message?.content ?? "";
 
   const nextHistory: ChatMessage[] = [
     ...messages.filter((m) => m.role !== "system"),
