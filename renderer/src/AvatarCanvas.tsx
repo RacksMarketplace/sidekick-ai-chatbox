@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { VRM, VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
 
-const vrmUrl = new URL("../../niko.vrm", import.meta.url).href;
+const vrmUrl = "/niko.vrm";
 
 export default function AvatarCanvas() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -23,7 +23,8 @@ export default function AvatarCanvas() {
     const scene = new THREE.Scene();
 
     const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
-    camera.position.set(0, 1.35, 2.25);
+    camera.position.set(0, 1.4, 2.2);
+    camera.lookAt(0, 1.35, 0);
     scene.add(camera);
 
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
@@ -37,8 +38,13 @@ export default function AvatarCanvas() {
     fillLight.position.set(-1.5, 1.2, 1.5);
     scene.add(fillLight);
 
+    const debugGeometry = new THREE.BoxGeometry(0.3, 0.3, 0.3);
+    const debugMaterial = new THREE.MeshStandardMaterial({ color: 0x66aaff });
+    const debugMesh = new THREE.Mesh(debugGeometry, debugMaterial);
+    debugMesh.position.set(0, 1.2, 0);
+    scene.add(debugMesh);
+
     let vrm: VRM | null = null;
-    let mixer: THREE.AnimationMixer | null = null;
 
     const loader = new GLTFLoader();
     loader.register((parser) => new VRMLoaderPlugin(parser));
@@ -47,26 +53,37 @@ export default function AvatarCanvas() {
       vrmUrl,
       (gltf) => {
         const loadedVrm = gltf.userData.vrm as VRM | undefined;
-        if (!loadedVrm) return;
+        if (!loadedVrm) {
+          console.error("VRM load succeeded, but no VRM data was found in the GLTF.");
+          return;
+        }
 
+        VRMUtils.rotateVRM0(loadedVrm);
         VRMUtils.removeUnnecessaryJoints(loadedVrm.scene);
-        loadedVrm.scene.rotation.y = Math.PI;
-        loadedVrm.scene.position.set(0, -0.85, 0);
-        loadedVrm.scene.scale.setScalar(1.05);
 
-        if (gltf.animations.length > 0) {
-          mixer = new THREE.AnimationMixer(loadedVrm.scene);
-          gltf.animations.forEach((clip) => {
-            mixer?.clipAction(clip).play();
-          });
+        loadedVrm.scene.visible = true;
+        loadedVrm.scene.position.set(0, -1.05, 0);
+        loadedVrm.scene.scale.setScalar(1.0);
+
+        loadedVrm.scene.updateMatrixWorld(true);
+        const headNode = loadedVrm.humanoid?.getNormalizedBoneNode("head");
+        if (headNode) {
+          const headPosition = new THREE.Vector3();
+          headNode.getWorldPosition(headPosition);
+          camera.lookAt(headPosition);
+        } else {
+          camera.lookAt(0, 1.35, 0);
         }
 
         vrm = loadedVrm;
         scene.add(loadedVrm.scene);
+        scene.remove(debugMesh);
+        debugGeometry.dispose();
+        debugMaterial.dispose();
       },
       undefined,
-      () => {
-        // Intentionally silent to avoid console noise during startup.
+      (error) => {
+        console.error("Failed to load /niko.vrm", error);
       }
     );
 
@@ -74,29 +91,22 @@ export default function AvatarCanvas() {
     let frameId = 0;
 
     const resize = () => {
-      const { clientWidth, clientHeight } = canvas;
-      if (clientWidth === 0 || clientHeight === 0) return;
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      if (width === 0 || height === 0) return;
 
-      camera.aspect = clientWidth / clientHeight;
+      canvas.width = width;
+      canvas.height = height;
+      camera.aspect = width / height;
       camera.updateProjectionMatrix();
-      renderer.setSize(clientWidth, clientHeight, false);
+      renderer.setSize(width, height, false);
     };
 
     const renderLoop = () => {
       const delta = clock.getDelta();
-
       if (vrm) {
-        if (mixer) {
-          mixer.update(delta);
-        } else {
-          const t = clock.elapsedTime;
-          vrm.scene.rotation.y = Math.PI + Math.sin(t * 0.5) * 0.08;
-          vrm.scene.position.y = -0.85 + Math.sin(t * 1.2) * 0.02;
-        }
-
         vrm.update(delta);
       }
-
       renderer.render(scene, camera);
       frameId = requestAnimationFrame(renderLoop);
     };
@@ -109,6 +119,8 @@ export default function AvatarCanvas() {
       window.removeEventListener("resize", resize);
       cancelAnimationFrame(frameId);
       vrm?.dispose();
+      debugGeometry.dispose();
+      debugMaterial.dispose();
       renderer.dispose();
     };
   }, []);
@@ -116,12 +128,13 @@ export default function AvatarCanvas() {
   return (
     <div
       style={{
-        position: "absolute",
+        position: "fixed",
         inset: 0,
         pointerEvents: "none",
+        zIndex: 1,
       }}
     >
-      <canvas ref={canvasRef} style={{ width: "100%", height: "100%" }} />
+      <canvas ref={canvasRef} style={{ width: "100vw", height: "100vh" }} />
     </div>
   );
 }

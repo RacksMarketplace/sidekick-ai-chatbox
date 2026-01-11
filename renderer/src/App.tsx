@@ -294,7 +294,7 @@ export default function App() {
         }}
         style={{
           position: "relative",
-          zIndex: 1,
+          zIndex: 2,
           height: "100%",
           maxWidth: 420,
           padding: 12,
