@@ -1,57 +1,41 @@
-# CODEX HANDOFF — SIDEKICK AI
+# CODEX HANDOFF — SIDEKICK BACKBONE v1
 
-This document defines the current state, philosophy, and non-negotiable constraints of the Sidekick AI project.
-
-All future changes must respect this document.
-If a requested change conflicts with this file, the change must NOT be implemented.
+This document defines the project’s non-negotiable constraints, architecture map, and operating rules.
+If a requested change conflicts with this document, it must NOT be implemented.
 
 ---
 
 ## Project Goal
 
-Sidekick is a desktop AI companion designed to feel like a quiet, trusted presence.
-
-It is NOT:
-- a chatbot
-- a notification system
-- a productivity nag
-- a personality toy
-
-It IS:
-- optional
-- calm
-- respectful
-- user-controlled
-
-The assistant should feel like someone nearby, not something watching.
+Sidekick is a desktop companion that feels calm, optional, and safe to leave open.
+It is NOT a chatbot or a surveillance tool.
+It IS a user-controlled, respectful presence.
 
 ---
 
 ## Core Principles (NON-NEGOTIABLE)
 
-1) The user is always in control  
-2) Inference may adjust behavior, never identity  
-3) Explicit beats implicit  
-4) Trust beats cleverness  
-5) Presence beats engagement  
+1) The user is always in control.
+2) Inference may adjust behavior, never identity.
+3) Explicit beats implicit.
+4) Trust beats cleverness.
+5) Presence beats engagement.
 
 ---
 
-## Behavioral States (Internal vs User-Facing)
+## Internal vs User-Facing Labels
 
 Internal identifiers:
 - serious
 - active
 - idle
 
-User-facing language (MANDATORY):
+User-facing labels (MANDATORY):
 - Focus
 - Hang out
 - Quiet
 
 Never expose the word “mode” to the user.
-
-These are social boundaries, not personalities.
 
 ---
 
@@ -59,110 +43,97 @@ These are social boundaries, not personalities.
 
 ### Focus
 - Purpose: work
-- Behavior: concise, neutral, no banter
+- Behavior: concise, structured, no banter
 - Proactivity: forbidden
-- Inference: allowed only to reduce verbosity
 
 ### Hang out (Default)
 - Purpose: companionship
-- Behavior: friendly, calm, lightly expressive
-- Proactivity: allowed (gentle only)
-- Inference: may adjust tone temporarily
+- Behavior: warm, light, brief
+- Proactivity: allowed (gentle only, rate-limited)
 
 ### Quiet
 - Purpose: non-intrusion
-- Behavior: silent unless addressed
+- Behavior: minimal, calm responses only when asked
 - Proactivity: forbidden
-- Inference: irrelevant
 
 ---
 
-## Inference Rules
+## Architecture Map
 
-Inference MAY:
-- temporarily change effective behavior
-- reduce verbosity
-- quiet responses during inactivity
+**Main process** (`main/main.ts`)
+- Source of truth for state, memory, and vision gating.
+- Computes effective behavior and broadcasts via `mode:update`.
+- Owns OpenAI calls and screenshot capture.
 
-Inference MUST NEVER:
-- change the user’s selected state
-- lock the user into anything
-- act without visibility
+**Preload bridge** (`main/preload.ts`)
+- Minimal IPC surface only.
+- No OpenAI keys or privileged logic.
 
-Inference may SUGGEST a change once.
-The user decides.
+**Renderer** (`renderer/src/App.tsx`)
+- UI only.
+- Detects vision intent for UI feedback only.
+- Never decides whether capture is allowed.
 
----
-
-## Proactive Presence Rules
-
-- Allowed ONLY in Hang out
-- Must be rare and ignorable
-- Must never interrupt Focus or Quiet
-- Must never escalate or repeat aggressively
-- Must never imply obligation
-
-Proactivity exists to signal presence, not demand attention.
+**Persistence**
+- Chat history: `chat_history.json`
+- Memory facts: `memory.json`
+- Settings: `settings.json`
 
 ---
 
-## Screen Awareness (CRITICAL)
+## Vision Rules (CRITICAL)
 
-Screen awareness is USER-INVOKED ONLY.
+Vision is user-invoked only.
 
 Allowed:
-- one-shot screenshot
-- explicit user action
-- visible acknowledgment
-- one response only
-- immediate discard
+- Explicit user request
+- One-shot screenshot capture
+- Attached to the same request
+- Acknowledged once, then answer
+- Immediate discard (no storage)
 
 Forbidden:
-- background capture
-- continuous monitoring
-- inference-based capture
-- reuse of screenshots
-- storage of visual data
+- Background capture
+- Continuous monitoring
+- Inference-based capture
+- Reuse of screenshots
+- Any claim of visual access without an attached image
 
-Language must frame this as:
-“I’m looking at what you showed me”
-NOT
-“I can see your screen”
+If a request is blocked, the **app** must return a deterministic message without calling the LLM.
+
+---
+
+## OpenAI Pipeline
+
+- Use Chat Completions only: `POST /v1/chat/completions`.
+- Model: `gpt-4o-mini`.
+- Messages are built in main process.
+- Assistant output must never claim vision without an attached image.
 
 ---
 
 ## Authority & Truth
 
 The application state is the source of truth.
-
-The assistant must:
-- report state, not reason about it
-- never invent restrictions
-- never contradict the UI
-- defer to visible controls
-
-Questions about state should be answered deterministically where possible.
+The assistant must report state, not reason about it.
+Never invent restrictions or contradict the UI.
 
 ---
 
 ## Constraints (DO NOT VIOLATE)
 
-- OpenAI calls remain in main process
-- contextIsolation remains enabled
-- preload bridge stays minimal
-- No hidden permissions
-- No background surveillance
-- No emotional dependency language
-- No anthropomorphized control (“I decided”, “I’m locked”)
+- OpenAI calls stay in the main process.
+- `contextIsolation` remains enabled.
+- Preload bridge stays minimal.
+- No hidden permissions.
+- No background surveillance.
+- No emotional dependency language.
+- No anthropomorphized control (“I decided”, “I locked you”).
 
 ---
 
 ## Design Intent
 
-Sidekick should feel safe to leave open.
-
-If a feature increases engagement but reduces trust, it must be rejected.
-
-Comfort > cleverness  
-Control > autonomy  
+Comfort > engagement
+Control > autonomy
 Presence > performance

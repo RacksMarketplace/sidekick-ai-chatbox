@@ -28,10 +28,6 @@ type Memory = {
   facts: string[];
 };
 
-type LookResponse =
-  | { ok: true; imageBase64: string }
-  | { ok: false; reason: "not-allowed" | "already-pending" | "failed"; message: string };
-
 contextBridge.exposeInMainWorld("electronAPI", {
   chat: (messages: ChatMessage[]) => ipcRenderer.invoke("ai:chat", messages),
 

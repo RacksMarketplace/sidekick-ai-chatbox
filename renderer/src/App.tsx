@@ -22,7 +22,7 @@ type Message = {
   role: "user" | "assistant";
   content: string;
   meta?: {
-    type?: "proactive";
+    type?: "proactive" | "looking";
   };
 };
 
@@ -33,10 +33,6 @@ type ChatMessage = {
     type?: "proactive";
   };
 };
-
-type LookResponse =
-  | { ok: true; imageBase64: string }
-  | { ok: false; reason: "not-allowed" | "already-pending" | "failed"; message: string };
 
 declare global {
   interface Window {
@@ -71,6 +67,41 @@ function formatModeLabel(mode: PrimaryMode | EffectiveMode) {
   return "Quiet";
 }
 
+function shouldUseVision(userText: string) {
+  const normalized = userText.toLowerCase().trim();
+  if (!normalized) return false;
+
+  const hasCodeFence = /```/.test(userText);
+  if (normalized.includes("look at this code") && hasCodeFence) return false;
+
+  const strongPhrases = [
+    "take a look",
+    "look at my screen",
+    "look at the screen",
+    "look at my display",
+    "see my screen",
+    "see the screen",
+    "can you see my screen",
+    "can you look at my screen",
+    "check my screen",
+    "what do you see",
+    "what am i doing",
+    "what am i looking at",
+    "screenshot",
+  ];
+
+  if (strongPhrases.some((phrase) => normalized.includes(phrase))) return true;
+
+  const hasLookAtThis =
+    normalized.includes("look at this") || normalized.includes("look at this message");
+  if (hasLookAtThis) {
+    if (normalized.includes("screen") || normalized.includes("display")) return true;
+    return userText.trim().length <= 120;
+  }
+
+  return false;
+}
+
 const MODE_QUESTION_PATTERNS = new Set([
   "what mode am i in",
   "what mode are you in",
@@ -85,6 +116,7 @@ const MODE_QUESTION_PATTERNS = new Set([
   "are you idle",
   "what setting am i in",
   "what are you set to",
+  "what are you on right now",
 ]);
 
 function normalizeModeQuestion(text: string) {
@@ -118,11 +150,12 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [, setLookingMessageId] = useState<string | null>(null);
 
   const [modeState, setModeState] = useState<ModeState>({
     primaryMode: "active",
     effectiveMode: "active",
-    effectiveReason: "primary setting: Hang out",
+    effectiveReason: "Primary setting: Hang out",
     idleMs: 0,
     isIdle: false,
     focusLocked: false,
@@ -229,35 +262,51 @@ export default function App() {
       return;
     }
 
+    const trimmedInput = input.trim();
+    const wantsVision = shouldUseVision(trimmedInput);
     const userMsg: Message = {
       id: crypto.randomUUID(),
       role: "user",
-      content: input.trim(),
+      content: trimmedInput,
     };
 
-    const nextUI = [...messages, userMsg];
+    const lookingId = wantsVision ? crypto.randomUUID() : null;
+    const lookingMsg = wantsVision
+      ? { id: lookingId, role: "assistant" as const, content: "(Looking…)", meta: { type: "looking" } }
+      : null;
+    const nextUI = lookingMsg ? [...messages, userMsg, lookingMsg] : [...messages, userMsg];
     setMessages(nextUI);
     setInput("");
     setLoading(true);
+    setLookingMessageId(lookingId);
 
     try {
       await api.markUserSent();
 
-      const payload: ChatMessage[] = nextUI.map((m) => ({
+      const payload: ChatMessage[] = nextUI
+        .filter((m) => m.meta?.type !== "looking")
+        .map((m) => ({
         role: m.role,
         content: m.content,
         meta: m.meta,
       }));
       const reply = await api.chat(payload);
 
-      setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "assistant", content: reply }]);
+      setMessages((prev) => {
+        const cleaned = lookingId ? prev.filter((m) => m.id !== lookingId) : prev;
+        return [...cleaned, { id: crypto.randomUUID(), role: "assistant", content: reply }];
+      });
     } catch (err: any) {
-      setMessages((prev) => [
-        ...prev,
-        { id: crypto.randomUUID(), role: "assistant", content: `Error: ${err?.message ?? String(err)}` },
-      ]);
+      setMessages((prev) => {
+        const cleaned = lookingId ? prev.filter((m) => m.id !== lookingId) : prev;
+        return [
+          ...cleaned,
+          { id: crypto.randomUUID(), role: "assistant", content: `Error: ${err?.message ?? String(err)}` },
+        ];
+      });
     } finally {
       setLoading(false);
+      setLookingMessageId(null);
     }
   }
 
@@ -451,29 +500,39 @@ export default function App() {
           </div>
         )}
 
-        {messages.map((m) => (
-          <div
-            key={m.id}
-            style={{
-              display: "flex",
-              justifyContent: m.role === "user" ? "flex-end" : "flex-start",
-              marginBottom: 6,
-            }}
-          >
+        {messages.map((m) => {
+          const isLooking = m.meta?.type === "looking";
+          const isUser = m.role === "user";
+          return (
             <div
+              key={m.id}
               style={{
-                maxWidth: "90%",
-                padding: "6px 10px",
-                borderRadius: 12,
-                background: m.role === "user" ? "rgba(90,150,255,0.35)" : "rgba(255,255,255,0.08)",
-                fontSize: 13,
-                whiteSpace: "pre-wrap",
+                display: "flex",
+                justifyContent: isUser ? "flex-end" : "flex-start",
+                marginBottom: 6,
               }}
             >
-              {m.content}
+              <div
+                style={{
+                  maxWidth: "90%",
+                  padding: isLooking ? "4px 8px" : "6px 10px",
+                  borderRadius: 12,
+                  background: isUser
+                    ? "rgba(90,150,255,0.35)"
+                    : isLooking
+                      ? "rgba(255,255,255,0.04)"
+                      : "rgba(255,255,255,0.08)",
+                  fontSize: isLooking ? 12 : 13,
+                  fontStyle: isLooking ? "italic" : "normal",
+                  opacity: isLooking ? 0.7 : 1,
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                {m.content}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
 
         {loading && <div style={{ opacity: 0.6, fontSize: 12 }}>Thinking…</div>}
       </div>
