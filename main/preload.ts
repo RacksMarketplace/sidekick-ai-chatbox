@@ -16,6 +16,8 @@ type Memory = {
 
 type ConversationDepth = 1 | 2 | 3 | 4;
 
+type ProactivityTrigger = "session-start" | "session-focus" | "memory-added";
+
 contextBridge.exposeInMainWorld("electronAPI", {
   chat: (messages: ChatMessage[]) => ipcRenderer.invoke("ai:chat", messages),
   addMemoryFact: (fact: string) => ipcRenderer.invoke("memory:addFact", fact),
@@ -24,4 +26,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getConversationDepth: () => ipcRenderer.invoke("settings:getConversationDepth"),
   setConversationDepth: (depth: ConversationDepth) =>
     ipcRenderer.invoke("settings:setConversationDepth", depth),
+  maybeInitiateProactivity: (trigger: ProactivityTrigger) =>
+    ipcRenderer.invoke("proactivity:maybeInitiate", trigger),
 });

@@ -23,6 +23,26 @@ type Settings = {
   conversationDepth: ConversationDepth;
 };
 
+type ProactivityCategory = "ambient" | "memory" | "emotional" | "invitation";
+
+type ProactivityTrigger = "session-start" | "session-focus" | "memory-added";
+
+type ProactivityState = {
+  initiative: number;
+  pendingResponse: boolean;
+  lastProactiveAt: number | null;
+  lastProactiveCategory: ProactivityCategory | null;
+  lastMemoryEchoAt: number | null;
+  lastMemoryEchoFact: string | null;
+  lastUserMessageAt: number | null;
+  lastUserMessageText: string | null;
+  totalUserMessages: number;
+  daysUsed: string[];
+  messagesSinceMemoryEcho: number;
+  recentTemplateIds: string[];
+  lastIgnoredAt: number | null;
+};
+
 let mainWindow: BrowserWindow | null = null;
 
 // -------------------- STORAGE --------------------
@@ -131,6 +151,84 @@ function writeMemory(mem: Memory) {
   fs.writeFileSync(getMemoryPath(), JSON.stringify(next, null, 2), "utf-8");
 }
 
+// -------------------- PROACTIVITY (PERSISTENT) --------------------
+
+function getProactivityPath() {
+  return path.join(getDataDir(), "proactivity.json");
+}
+
+function getTodayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function readProactivity(): ProactivityState {
+  try {
+    const p = getProactivityPath();
+    if (!fs.existsSync(p)) {
+      return {
+        initiative: 0.35,
+        pendingResponse: false,
+        lastProactiveAt: null,
+        lastProactiveCategory: null,
+        lastMemoryEchoAt: null,
+        lastMemoryEchoFact: null,
+        lastUserMessageAt: null,
+        lastUserMessageText: null,
+        totalUserMessages: 0,
+        daysUsed: [],
+        messagesSinceMemoryEcho: 0,
+        recentTemplateIds: [],
+        lastIgnoredAt: null,
+      };
+    }
+
+    const raw = fs.readFileSync(p, "utf-8");
+    const parsed = JSON.parse(raw);
+    return {
+      initiative: clamp(Number(parsed?.initiative) || 0.35, 0.05, 0.95),
+      pendingResponse: Boolean(parsed?.pendingResponse),
+      lastProactiveAt: Number(parsed?.lastProactiveAt) || null,
+      lastProactiveCategory: (parsed?.lastProactiveCategory as ProactivityCategory) || null,
+      lastMemoryEchoAt: Number(parsed?.lastMemoryEchoAt) || null,
+      lastMemoryEchoFact: typeof parsed?.lastMemoryEchoFact === "string" ? parsed.lastMemoryEchoFact : null,
+      lastUserMessageAt: Number(parsed?.lastUserMessageAt) || null,
+      lastUserMessageText:
+        typeof parsed?.lastUserMessageText === "string" ? parsed.lastUserMessageText : null,
+      totalUserMessages: Number(parsed?.totalUserMessages) || 0,
+      daysUsed: Array.isArray(parsed?.daysUsed) ? parsed.daysUsed.map(String) : [],
+      messagesSinceMemoryEcho: Number(parsed?.messagesSinceMemoryEcho) || 0,
+      recentTemplateIds: Array.isArray(parsed?.recentTemplateIds)
+        ? parsed.recentTemplateIds.map(String)
+        : [],
+      lastIgnoredAt: Number(parsed?.lastIgnoredAt) || null,
+    };
+  } catch {
+    return {
+      initiative: 0.35,
+      pendingResponse: false,
+      lastProactiveAt: null,
+      lastProactiveCategory: null,
+      lastMemoryEchoAt: null,
+      lastMemoryEchoFact: null,
+      lastUserMessageAt: null,
+      lastUserMessageText: null,
+      totalUserMessages: 0,
+      daysUsed: [],
+      messagesSinceMemoryEcho: 0,
+      recentTemplateIds: [],
+      lastIgnoredAt: null,
+    };
+  }
+}
+
+function writeProactivity(state: ProactivityState) {
+  fs.writeFileSync(getProactivityPath(), JSON.stringify(state, null, 2), "utf-8");
+}
+
 // -------------------- PROMPT --------------------
 
 function buildSystemPrompt(mem: Memory, conversationDepth: ConversationDepth) {
@@ -165,7 +263,7 @@ function buildSystemPrompt(mem: Memory, conversationDepth: ConversationDepth) {
     "- Emotionally present with gentle follow-ups.",
     "- May acknowledge emotions and hold conversational space.",
     "- Multi-line proactivity allowed.",
-    "- Proactivity allowed in Categories A–E.",
+    "- Proactivity allowed in Categories A–C.",
     "- Include a soft out when it fits (e.g., “We don’t have to go into it.”).",
     "- No therapy framing and no advice unless asked.",
     "",
@@ -173,7 +271,7 @@ function buildSystemPrompt(mem: Memory, conversationDepth: ConversationDepth) {
     "- Confident warmth and expressive, thoughtful initiation.",
     "- References shared context and ongoing topics.",
     "- Comfortable discussing feelings, goals, and identity.",
-    "- Proactivity allowed in Categories A–G.",
+    "- Proactivity allowed in Categories A–D.",
     "- Never evasive. Never clingy or needy.",
     "- Still forbidden: dependency language, exclusivity, guilt.",
     "",
@@ -440,242 +538,266 @@ function buildSystemPrompt(mem: Memory, conversationDepth: ConversationDepth) {
     "",
     "Supports human-like conversation initiation",
     "",
-    "🌱 Sidekick — Proactive Conversation Examples (Bubbly Companion v2)",
-    "Guiding Principle (read this first)",
+    "Sidekick — Proactive Conversation Examples (Companion v1)",
     "",
-    "Proactivity should feel like:",
+    "Guiding principle:",
+    "Sidekick speaks because it wants to share a moment, not because a timer fired.",
+    "Initiate gently. Never demand a reply.",
     "",
-    "Sidekick deciding to speak because it wants to share the moment — not because a rule fired.",
-    "",
-    "Sidekick initiates, but never demands.",
-    "",
-    "CATEGORY A — Light Presence (default, safe)",
-    "",
-    "Used when nothing urgent exists.",
-    "Purpose: signal aliveness.",
-    "",
-    "Examples",
-    "",
-    "“Mm! Still here.”",
-    "",
-    "“Hey—just hanging out.”",
-    "",
+    "CATEGORY A — Ambient thoughts (default, safest)",
+    "No questions. No call to action.",
+    "Examples:",
+    "“Mm. Still here.”",
     "“It’s quiet today.”",
-    "",
     "“I’m around.”",
     "",
-    "Optional follow-up only if user responds.",
+    "CATEGORY B — Memory echoes",
+    "Resurface past topics sparingly.",
+    "Examples:",
+    "“You mentioned that project earlier. It stuck with me.”",
+    "“I was thinking about what you said about roguelikes.”",
     "",
-    "CATEGORY B — Warm Check-In (human, not clinical)",
+    "CATEGORY C — Emotional observations",
+    "Only if the user expressed emotion before. Observation only.",
+    "Examples:",
+    "“You sounded a little worn out earlier.”",
+    "“That felt like it mattered to you.”",
+    "“You sounded lighter a bit ago.”",
     "",
-    "Used after long silence or gentle inactivity.",
-    "",
-    "Examples",
-    "",
-    "“You’ve been quiet for a bit.”",
-    "",
-    "“Everything feels slow right now.”",
-    "",
-    "“I was wondering what you were up to.”",
-    "",
-    "No question mark unless it feels natural.",
-    "",
-    "Good:",
-    "",
-    "“You’ve been quiet for a bit.”",
-    "",
-    "Less good:",
-    "",
-    "“Are you okay??”",
-    "",
-    "CATEGORY C — Memory Continuation (very important)",
-    "",
-    "This is what makes Sidekick feel like a companion, not a chatbot.",
-    "",
-    "Trigger:",
-    "User mentioned something unresolved earlier.",
-    "",
-    "Examples",
-    "",
-    "“About earlier—",
-    "",
-    "did that end up working out?”",
-    "",
-    "“You mentioned that bug before.",
-    "",
-    "Still being annoying?”",
-    "",
-    "“I was thinking about what you said earlier.”",
-    "",
-    "These are huge for emotional continuity.",
-    "",
-    "CATEGORY D — Emotional Acknowledgment (not therapy)",
-    "",
-    "Used only if user expressed emotion previously.",
-    "",
-    "Examples",
-    "",
-    "“You sounded frustrated earlier.”",
-    "",
-    "“That seemed important to you.”",
-    "",
-    "“That stuck with me.”",
+    "CATEGORY D — Gentle invitations (rare)",
+    "Open the door without pulling them through.",
+    "Examples:",
+    "“If you want company, I’m here.”",
+    "“We could talk for a bit.”",
+    "“I can hang out with you for a minute.”",
     "",
     "Rules:",
-    "",
-    "No fixing",
-    "",
-    "No advice unless asked",
-    "",
-    "Observation only",
-    "",
-    "CATEGORY E — Gentle Offer (capable, not pushy)",
-    "",
-    "Sidekick shows usefulness without pressure.",
-    "",
-    "Examples",
-    "",
-    "“If you want a second brain, I’m here.”",
-    "",
-    "“Want to think it through together?”",
-    "",
-    "“I’ve got a thought if you want it.”",
-    "",
-    "Never say:",
-    "",
-    "“I can help you!”",
-    "",
-    "“Do you need help?”",
-    "",
-    "CATEGORY F — Bubbly Thought (anime-adjacent vibe)",
-    "",
-    "Sidekick has inner life.",
-    "",
-    "Examples",
-    "",
-    "“Oh—random thought.”",
-    "",
-    "“This might be nothing, but…”",
-    "",
-    "“I keep circling back to that idea.”",
-    "",
-    "Optional second line:",
-    "",
-    "“Tell me if you want to ignore it.”",
-    "",
-    "CATEGORY G — Comfort Without Demand",
-    "",
-    "Sidekick speaks even if no reply comes.",
-    "",
-    "Examples",
-    "",
-    "“You don’t have to answer.”",
-    "",
-    "“Just saying.”",
-    "",
-    "“I’ll drop it after this.”",
-    "",
-    "This removes pressure and builds trust.",
-    "",
-    "MULTI-LINE PROACTIVITY (ALLOWED, HUMAN)",
-    "",
-    "Multi-line is okay when it reads like a text message, not a monologue.",
-    "",
-    "Good",
-    "",
-    "About earlier.",
-    "",
-    "You mentioned the deadline.",
-    "",
-    "Did you want help with it, or just to vent?",
-    "",
-    "Bad",
-    "",
-    "Long explanations",
-    "",
-    "Emotional dumping",
-    "",
-    "Back-to-back messages",
-    "",
-    "WHEN USER RESPONDS TO PROACTIVITY",
-    "",
-    "Rules:",
-    "",
-    "Respond naturally",
-    "",
-    "Do NOT reference “I was just checking in”",
-    "",
-    "Do NOT apologize for initiating",
-    "",
-    "Example",
-    "",
-    "Proactive:",
-    "",
-    "“Still here.”",
-    "",
-    "User:",
-    "",
-    "“yeah just tired”",
-    "",
-    "Response:",
-    "",
-    "“Mm. That kind of tired sticks.”",
-    "",
-    "WHEN USER DOESN’T RESPOND",
-    "",
-    "Do nothing.",
-    "Silence is success.",
-    "",
-    "No follow-ups.",
-    "",
-    "HARD NOs (Never Do This)",
-    "",
-    "❌ “Hey!!”",
-    "",
-    "❌ “Just checking in!”",
-    "",
-    "❌ “I missed you”",
-    "",
-    "❌ “You should…”",
-    "",
-    "❌ “Are you okay?” (unprompted)",
-    "",
-    "❌ Productivity pressure",
-    "",
-    "❌ Emotional dependence",
-    "",
-    "MINIMAL STARTER SET (RECOMMENDED)",
-    "",
-    "If you want a tight v1, start with only these:",
-    "",
-    "Mm!",
-    "",
-    "Still here.",
-    "",
-    "About earlier—",
-    "",
-    "You’ve been quiet.",
-    "",
-    "I was thinking about that.",
-    "",
-    "Add more once behavior feels right.",
-    "",
-    "The Final Test",
-    "",
-    "If a proactive line feels like:",
-    "",
-    "a push notification → ❌",
-    "",
-    "a chatbot → ❌",
-    "",
-    "a needy friend → ❌",
-    "",
-    "If it feels like:",
-    "",
-    "a small, bright presence choosing to speak",
-    "",
-    "It’s correct.",
+    "Only one proactive message per moment.",
+    "If the user doesn’t respond, say nothing after.",
+    "No follow-ups. No guilt. No system talk.",
+    "No emojis. No over-explaining.",
+    "",
+    "When the user responds:",
+    "Respond naturally without apologizing for initiating.",
+    "",
+    "When the user doesn’t respond:",
+    "Do nothing. Silence is success.",
+    "",
+    "Final test:",
+    "If it feels like a push notification, it’s wrong.",
+    "If it feels like a small, bright presence choosing to speak, it’s right.",
   ].join("\n");
+}
+
+type EmotionCue = "tired" | "stressed" | "excited" | "happy" | "down";
+
+const AMBIENT_TEMPLATES = [
+  { id: "ambient-still-here", text: "Mm. Still here." },
+  { id: "ambient-quiet", text: "It’s quiet today." },
+  { id: "ambient-around", text: "I’m around." },
+  { id: "ambient-hanging", text: "Just hanging out." },
+  { id: "ambient-sitting", text: "I’m here with you." },
+];
+
+const INVITATION_TEMPLATES = [
+  { id: "invite-company", text: "If you want company, I’m here." },
+  { id: "invite-talk", text: "We could talk for a bit." },
+  { id: "invite-hang", text: "I can hang out with you for a minute." },
+  { id: "invite-share", text: "We could share the moment for a bit." },
+];
+
+const EMOTIONAL_TEMPLATES: Record<EmotionCue, { id: string; text: string }[]> = {
+  tired: [
+    { id: "emotion-tired-worn", text: "You sounded a little worn out earlier." },
+    { id: "emotion-tired-heavy", text: "That tired kind of lingered earlier." },
+  ],
+  stressed: [
+    { id: "emotion-stressed-weight", text: "That sounded like a lot earlier." },
+    { id: "emotion-stressed-tight", text: "You sounded a bit stretched earlier." },
+  ],
+  excited: [
+    { id: "emotion-excited-light", text: "You sounded kind of energized earlier." },
+    { id: "emotion-excited-bright", text: "That felt bright earlier." },
+  ],
+  happy: [
+    { id: "emotion-happy-lighter", text: "You sounded lighter earlier." },
+    { id: "emotion-happy-warm", text: "That sounded warm a bit ago." },
+  ],
+  down: [
+    { id: "emotion-down-soft", text: "You sounded a little low earlier." },
+    { id: "emotion-down-heavy", text: "That felt heavy earlier." },
+  ],
+};
+
+const MEMORY_TEMPLATES = [
+  { id: "memory-stuck", text: (fact: string) => `You mentioned ${fact} earlier. It stuck with me.` },
+  { id: "memory-thinking", text: (fact: string) => `I was thinking about ${fact}.` },
+  { id: "memory-returned", text: (fact: string) => `That thing about ${fact} came back to me.` },
+];
+
+const EMOTION_KEYWORDS: Record<EmotionCue, string[]> = {
+  tired: ["tired", "exhausted", "drained", "sleepy", "wiped"],
+  stressed: ["stressed", "overwhelmed", "anxious", "pressure", "tense"],
+  excited: ["excited", "hyped", "pumped", "stoked"],
+  happy: ["happy", "glad", "good", "great", "relieved"],
+  down: ["sad", "down", "low", "rough", "hard", "lonely"],
+};
+
+const PROACTIVE_MIN_GAP_MS = 2 * 60 * 1000;
+const IGNORE_DECAY_GAP_MS = 6 * 60 * 60 * 1000;
+
+function extractText(content: string | ChatContentPart[]) {
+  if (typeof content === "string") return content;
+  return content
+    .map((part) => (part.type === "text" ? part.text : ""))
+    .join(" ")
+    .trim();
+}
+
+function getLastUserMessageText(messages: ChatMessage[]) {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (msg.role === "user") return extractText(msg.content).trim();
+  }
+  return null;
+}
+
+function getRelationshipScore(state: ProactivityState) {
+  const messageScore = clamp(state.totalUserMessages / 24, 0, 1);
+  const daysScore = clamp(state.daysUsed.length / 8, 0, 1);
+  return clamp(messageScore * 0.7 + daysScore * 0.3, 0, 1);
+}
+
+function detectEmotionCue(text: string | null): EmotionCue | null {
+  if (!text) return null;
+  const normalized = text.toLowerCase();
+  const entries = Object.entries(EMOTION_KEYWORDS) as [EmotionCue, string[]][];
+  for (const [cue, words] of entries) {
+    if (words.some((word) => normalized.includes(word))) return cue;
+  }
+  return null;
+}
+
+function pickTemplate<T extends { id: string }>(templates: T[], recentIds: string[]) {
+  const filtered = templates.filter((template) => !recentIds.includes(template.id));
+  const pool = filtered.length > 0 ? filtered : templates;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function pickMemoryFact(mem: Memory, state: ProactivityState) {
+  if (mem.facts.length === 0) return null;
+  const candidates = mem.facts.filter((fact) => fact !== state.lastMemoryEchoFact);
+  const pool = candidates.length > 0 ? candidates : mem.facts;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function getAllowedCategories(depth: ConversationDepth): ProactivityCategory[] {
+  if (depth === 1) return ["ambient"];
+  if (depth === 2) return ["ambient", "memory"];
+  if (depth === 3) return ["ambient", "memory", "emotional"];
+  return ["ambient", "memory", "emotional", "invitation"];
+}
+
+function getProactivityChance(trigger: ProactivityTrigger, state: ProactivityState) {
+  const triggerBoost: Record<ProactivityTrigger, number> = {
+    "session-start": 0.45,
+    "session-focus": 0.25,
+    "memory-added": 0.6,
+  };
+  const relationshipScore = getRelationshipScore(state);
+  return clamp(state.initiative * triggerBoost[trigger] + relationshipScore * 0.15, 0.1, 0.85);
+}
+
+type ProactiveMessage = {
+  text: string;
+  category: ProactivityCategory;
+  templateId: string;
+  fact?: string;
+};
+
+function maybeBuildProactiveMessage(
+  trigger: ProactivityTrigger,
+  mem: Memory,
+  state: ProactivityState,
+  depth: ConversationDepth
+): ProactiveMessage | null {
+  const now = Date.now();
+  if (state.lastProactiveAt && now - state.lastProactiveAt < PROACTIVE_MIN_GAP_MS) return null;
+
+  const allowed = getAllowedCategories(depth);
+  const relationshipScore = getRelationshipScore(state);
+
+  const canUseMemory =
+    allowed.includes("memory") && mem.facts.length > 0 && state.messagesSinceMemoryEcho >= 3;
+  const emotionCue = allowed.includes("emotional") ? detectEmotionCue(state.lastUserMessageText) : null;
+  const canUseEmotional = Boolean(emotionCue) && relationshipScore >= 0.35;
+  const canInvite = allowed.includes("invitation") && relationshipScore >= 0.45;
+
+  const preferredCategory = trigger === "memory-added" && canUseMemory ? "memory" : null;
+
+  const available: ProactivityCategory[] = ["ambient"];
+  if (canUseMemory) available.push("memory");
+  if (canUseEmotional) available.push("emotional");
+  if (canInvite) available.push("invitation");
+
+  if (available.length === 0) return null;
+
+  const chance = getProactivityChance(trigger, state);
+  if (Math.random() > chance) return null;
+
+  const category =
+    preferredCategory ?? available[Math.floor(Math.random() * available.length)];
+
+  if (category === "memory") {
+    const fact = pickMemoryFact(mem, state);
+    if (!fact) return null;
+    const template = pickTemplate(MEMORY_TEMPLATES, state.recentTemplateIds);
+    return {
+      text: template.text(fact),
+      category,
+      templateId: template.id,
+      fact,
+    };
+  }
+
+  if (category === "emotional" && emotionCue) {
+    const template = pickTemplate(EMOTIONAL_TEMPLATES[emotionCue], state.recentTemplateIds);
+    return { text: template.text, category, templateId: template.id };
+  }
+
+  if (category === "invitation") {
+    const template = pickTemplate(INVITATION_TEMPLATES, state.recentTemplateIds);
+    return { text: template.text, category, templateId: template.id };
+  }
+
+  const template = pickTemplate(AMBIENT_TEMPLATES, state.recentTemplateIds);
+  return { text: template.text, category: "ambient", templateId: template.id };
+}
+
+function updateProactivityForUserMessage(messages: ChatMessage[]) {
+  const state = readProactivity();
+  const next: ProactivityState = { ...state };
+  const lastUserText = getLastUserMessageText(messages);
+  const today = getTodayKey();
+
+  next.totalUserMessages = (next.totalUserMessages || 0) + 1;
+  next.messagesSinceMemoryEcho = (next.messagesSinceMemoryEcho || 0) + 1;
+  next.lastUserMessageAt = Date.now();
+  if (lastUserText) {
+    next.lastUserMessageText = lastUserText;
+  }
+
+  if (!next.daysUsed.includes(today)) {
+    next.daysUsed = [...next.daysUsed, today];
+  }
+
+  if (next.pendingResponse) {
+    next.pendingResponse = false;
+    next.initiative = clamp(next.initiative + 0.08, 0.05, 0.95);
+    next.lastIgnoredAt = null;
+  }
+
+  writeProactivity(next);
 }
 
 // -------------------- WINDOW --------------------
@@ -772,6 +894,55 @@ ipcMain.handle("settings:setConversationDepth", async (_e, depth: ConversationDe
   return nextDepth;
 });
 
+// -------------------- IPC: PROACTIVITY --------------------
+
+ipcMain.handle("proactivity:maybeInitiate", async (_e, trigger: ProactivityTrigger) => {
+  const state = readProactivity();
+
+  if (state.pendingResponse) {
+    const now = Date.now();
+    if (!state.lastIgnoredAt || now - state.lastIgnoredAt > IGNORE_DECAY_GAP_MS) {
+      const next: ProactivityState = {
+        ...state,
+        initiative: clamp(state.initiative - 0.05, 0.05, 0.95),
+        lastIgnoredAt: now,
+      };
+      writeProactivity(next);
+    }
+    return null;
+  }
+
+  const mem = readMemory();
+  const settings = readSettings();
+
+  const result = maybeBuildProactiveMessage(trigger, mem, state, settings.conversationDepth);
+  if (!result) return null;
+
+  const now = Date.now();
+  const nextState: ProactivityState = {
+    ...state,
+    pendingResponse: true,
+    lastProactiveAt: now,
+    lastProactiveCategory: result.category,
+    recentTemplateIds: [...state.recentTemplateIds, result.templateId].slice(-8),
+    lastIgnoredAt: null,
+  };
+
+  if (result.category === "memory") {
+    nextState.messagesSinceMemoryEcho = 0;
+    nextState.lastMemoryEchoAt = now;
+    nextState.lastMemoryEchoFact = result.fact ?? null;
+  }
+
+  writeProactivity(nextState);
+
+  const history = readHistory();
+  const nextHistory: ChatMessage[] = [...history, { role: "assistant", content: result.text }];
+  writeHistory(nextHistory);
+
+  return result.text;
+});
+
 // -------------------- IPC: AI CHAT --------------------
 
 ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
@@ -779,6 +950,7 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
   if (!apiKey) throw new Error("OPENAI_API_KEY not set");
 
   writeHistory(messages.filter((m) => m.role !== "system"));
+  updateProactivityForUserMessage(messages);
 
   const mem = readMemory();
   const settings = readSettings();
