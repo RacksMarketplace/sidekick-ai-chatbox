@@ -34,6 +34,10 @@ type ChatMessage = {
   };
 };
 
+type LookResponse =
+  | { ok: true; imageBase64: string }
+  | { ok: false; reason: "not-allowed" | "already-pending" | "failed"; message: string };
+
 declare global {
   interface Window {
     electronAPI?: {
@@ -53,7 +57,7 @@ declare global {
       onProactiveMessage: (cb: (message: ChatMessage) => void) => void;
       reportUserActivity: () => void;
       reportUserTyping: () => void;
-      requestLook: () => Promise<{ ok: true } | { ok: false; reason: "not-allowed" | "already-pending" }>;
+      requestLook: () => Promise<LookResponse>;
     };
   }
 }
@@ -300,23 +304,12 @@ export default function App() {
         ]);
         return;
       }
-      if (result.reason === "not-allowed") {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: "assistant",
-            content: "I can do that in Hang out, not in Focus or Quiet.",
-          },
-        ]);
-        return;
-      }
       setMessages((prev) => [
         ...prev,
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          content: "I can take another look after the next reply.",
+          content: result.message || "I can't do that right now.",
         },
       ]);
     } catch (err: any) {

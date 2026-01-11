@@ -42,7 +42,7 @@ type Memory = {
 
 let mainWindow: electron.BrowserWindow | null = null;
 
-let pendingLookImage: string | null = null;
+let pendingLookImageBase64: string | null = null;
 
 const execFileAsync = promisify(execFile);
 
@@ -512,19 +512,27 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
 
 async function capturePrimaryDisplay(): Promise<string> {
   const display = screen.getPrimaryDisplay();
+  const maxWidth = 1280;
+  const maxHeight = 800;
+  const scale = Math.min(
+    maxWidth / display.size.width,
+    maxHeight / display.size.height,
+    1
+  );
+  const thumbnailSize = {
+    width: Math.max(1, Math.round(display.size.width * scale)),
+    height: Math.max(1, Math.round(display.size.height * scale)),
+  };
   const sources = await desktopCapturer.getSources({
     types: ["screen"],
-    thumbnailSize: {
-      width: display.size.width,
-      height: display.size.height,
-    },
+    thumbnailSize,
   });
   const source =
     sources.find((entry) => entry.display_id === String(display.id)) ??
     sources.find((entry) => entry.display_id) ??
     sources[0];
   if (!source) throw new Error("No screen source available");
-  return source.thumbnail.toDataURL();
+  return source.thumbnail.toPNG().toString("base64");
 }
 
 // -------------------- WINDOW --------------------
@@ -635,7 +643,7 @@ ipcMain.handle("history:load", async () => readHistory());
 
 ipcMain.handle("history:clear", async () => {
   writeHistory([]);
-  pendingLookImage = null;
+  pendingLookImageBase64 = null;
   return true;
 });
 
@@ -706,14 +714,30 @@ ipcMain.on("proactive:typing", () => {
 
 ipcMain.handle("look:request", async () => {
   if (modeState.effectiveMode !== "active") {
-    return { ok: false, reason: "not-allowed" as const };
+    return {
+      ok: false as const,
+      reason: "not-allowed" as const,
+      message: "I can only do that in Hang out, not in Focus or Quiet.",
+    };
   }
-  if (pendingLookImage) {
-    return { ok: false, reason: "already-pending" as const };
+  if (pendingLookImageBase64) {
+    return {
+      ok: false as const,
+      reason: "already-pending" as const,
+      message: "I can take another look after the next reply.",
+    };
   }
-  const imageUrl = await capturePrimaryDisplay();
-  pendingLookImage = imageUrl;
-  return { ok: true as const };
+  try {
+    const imageBase64 = await capturePrimaryDisplay();
+    pendingLookImageBase64 = imageBase64;
+    return { ok: true as const, imageBase64 };
+  } catch (error: any) {
+    return {
+      ok: false as const,
+      reason: "failed" as const,
+      message: "I couldn't capture the screen. Please try again.",
+    };
+  }
 });
 
 // -------------------- IPC: AI CHAT --------------------
@@ -735,8 +759,9 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
   const mem = readMemory();
   const systemPrompt = buildSystemPrompt(modeState, mem);
 
-  const oneShotImage = modeState.effectiveMode === "active" ? pendingLookImage : null;
-  pendingLookImage = null;
+  const oneShotImageBase64 =
+    modeState.effectiveMode === "active" ? pendingLookImageBase64 : null;
+  pendingLookImageBase64 = null;
 
   const filteredMessages = messages.filter(
     (m) => m.role !== "system" && m.meta?.type !== "proactive"
@@ -744,7 +769,7 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
 
   const payload: ChatMessage[] = [{ role: "system", content: systemPrompt }];
 
-  if (oneShotImage) {
+  if (oneShotImageBase64) {
     payload.push({
       role: "system",
       content: [
@@ -760,7 +785,7 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
 
   payload.push(...filteredMessages);
 
-  if (oneShotImage) {
+  if (oneShotImageBase64) {
     const lastUserIndex = [...payload]
       .map((m, index) => ({ m, index }))
       .reverse()
@@ -768,7 +793,7 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
 
     const imagePart: ChatContentPart = {
       type: "image_url",
-      image_url: { url: oneShotImage },
+      image_url: { url: `data:image/png;base64,${oneShotImageBase64}` },
     };
 
     if (lastUserIndex !== undefined) {
