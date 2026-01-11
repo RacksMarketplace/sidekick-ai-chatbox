@@ -770,7 +770,7 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
   writeHistory(messages.filter((m) => m.role !== "system"));
 
   const mem = readMemory();
-  const systemPrompt = buildSystemPrompt(modeState, mem);
+  const baseSystemPrompt = buildSystemPrompt(modeState, mem);
 
   const filteredMessages = messages.filter(
     (m) => m.role !== "system" && m.meta?.type !== "proactive"
@@ -783,10 +783,17 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
     return "I can do that in Hang out, not in Focus or Quiet.";
   }
 
-  const latestUserIndex = [...filteredMessages]
-    .map((m, index) => ({ m, index }))
-    .reverse()
-    .find(({ m }) => m.role === "user")?.index;
+  const systemPrompt = wantsVision
+    ? [
+        baseSystemPrompt,
+        "",
+        "The user provided an image for this next response only.",
+        "The image is user-provided, one-shot, and does not persist.",
+        "Do not assume it remains available or refer to past images.",
+        "If an image is attached, do not claim you cannot see it.",
+        "Begin your response with: \"Okay, I’ll take a quick look.\"",
+      ].join("\n")
+    : baseSystemPrompt;
 
   let imageBase64: string | null = null;
   if (wantsVision) {
@@ -799,18 +806,30 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
 
   const payload: ChatMessage[] = [{ role: "system", content: systemPrompt }];
 
-  filteredMessages.forEach((message, index) => {
-    const textContent =
-      typeof message.content === "string"
-        ? message.content
-        : message.content
-            .filter((part) => part.type === "text")
-            .map((part) => part.text)
-            .join("\n");
+  payload.push(...filteredMessages);
 
-    if (imageBase64 && index === latestUserIndex) {
-      payload.push({
-        role: "user",
+  if (imageBase64) {
+    const lastUserIndex = [...payload]
+      .map((m, index) => ({ m, index }))
+      .reverse()
+      .find(({ m }) => m.role === "user")?.index;
+
+    const imagePart: ChatContentPart = {
+      type: "image_url",
+      image_url: { url: `data:image/png;base64,${imageBase64}` },
+    };
+
+    if (lastUserIndex !== undefined) {
+      const lastUser = payload[lastUserIndex];
+      const textContent =
+        typeof lastUser.content === "string"
+          ? lastUser.content
+          : lastUser.content
+              .filter((part) => part.type === "text")
+              .map((part) => part.text)
+              .join("\n");
+      payload[lastUserIndex] = {
+        ...lastUser,
         content: [
           { type: "text", text: textContent || "Here is what I’m showing you." },
           { type: "image_url", image_url: { url: `data:image/png;base64,${imageBase64}` } },
