@@ -708,12 +708,19 @@ function getProactivityChance(trigger: ProactivityTrigger, state: ProactivitySta
   return clamp(state.initiative * triggerBoost[trigger] + relationshipScore * 0.15, 0.1, 0.85);
 }
 
+type ProactiveMessage = {
+  text: string;
+  category: ProactivityCategory;
+  templateId: string;
+  fact?: string;
+};
+
 function maybeBuildProactiveMessage(
   trigger: ProactivityTrigger,
   mem: Memory,
   state: ProactivityState,
   depth: ConversationDepth
-) {
+): ProactiveMessage | null {
   const now = Date.now();
   if (state.lastProactiveAt && now - state.lastProactiveAt < PROACTIVE_MIN_GAP_MS) return null;
 
@@ -726,15 +733,14 @@ function maybeBuildProactiveMessage(
   const canUseEmotional = Boolean(emotionCue) && relationshipScore >= 0.35;
   const canInvite = allowed.includes("invitation") && relationshipScore >= 0.45;
 
-  const preferredCategory =
-    trigger === "memory-added" && canUseMemory ? "memory" : null;
+  const preferredCategory = trigger === "memory-added" && canUseMemory ? "memory" : null;
 
-  const available: ProactivityCategory[] = [
+  const available = [
     "ambient",
     ...(canUseMemory ? ["memory"] : []),
     ...(canUseEmotional ? ["emotional"] : []),
     ...(canInvite ? ["invitation"] : []),
-  ];
+  ] satisfies ProactivityCategory[];
 
   if (available.length === 0) return null;
 
