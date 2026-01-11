@@ -7,6 +7,8 @@ type Memory = {
 
 type ConversationDepth = 1 | 2 | 3 | 4;
 
+type ProactivityTrigger = "session-start" | "session-focus" | "memory-added";
+
 type Message = {
   id: string;
   role: "user" | "assistant";
@@ -32,6 +34,7 @@ declare global {
       addMemoryFact: (fact: string) => Promise<Memory>;
       getConversationDepth: () => Promise<ConversationDepth>;
       setConversationDepth: (depth: ConversationDepth) => Promise<ConversationDepth>;
+      maybeInitiateProactivity: (trigger: ProactivityTrigger) => Promise<string | null>;
     };
   }
 }
@@ -88,6 +91,18 @@ export default function App() {
     setFatal(null);
   }, [api]);
 
+  async function maybeInitiateProactivity(trigger: ProactivityTrigger) {
+    if (!api) return;
+    try {
+      const message = await api.maybeInitiateProactivity(trigger);
+      if (message) {
+        setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "assistant", content: message }]);
+      }
+    } catch (e: any) {
+      setFatal(`Proactivity failed: ${e?.message ?? String(e)}`);
+    }
+  }
+
   useEffect(() => {
     (async () => {
       if (!api) return;
@@ -99,6 +114,22 @@ export default function App() {
         setFatal(`Memory load failed: ${e?.message ?? String(e)}`);
       }
     })();
+  }, [api]);
+
+  useEffect(() => {
+    if (!api) return;
+    void maybeInitiateProactivity("session-start");
+  }, [api]);
+
+  useEffect(() => {
+    if (!api) return;
+    const handleFocus = () => {
+      void maybeInitiateProactivity("session-focus");
+    };
+    window.addEventListener("focus", handleFocus);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+    };
   }, [api]);
 
   useEffect(() => {
@@ -234,6 +265,7 @@ export default function App() {
     const mem = await api.addMemoryFact(text);
     setMemory(mem);
     setRememberText("");
+    void maybeInitiateProactivity("memory-added");
   }
 
   async function updateConversationDepth(next: ConversationDepth) {
