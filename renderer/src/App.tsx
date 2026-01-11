@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import AvatarCanvas from "./AvatarCanvas";
 
 type Memory = {
   updatedAt: number;
@@ -281,25 +282,31 @@ export default function App() {
   }
 
   return (
-    <div
-      onDragOver={(event) => event.preventDefault()}
-      onDrop={(event) => {
-        event.preventDefault();
-        const file = event.dataTransfer.files?.[0];
-        if (!file) return;
-        void handleImageFile(file);
-      }}
-      style={{
-        height: "100%",
-        padding: 12,
-        background: "rgba(20,20,30,0.96)",
-        color: "#fff",
-        fontFamily: "system-ui",
-        borderRadius: 18,
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
+    <div style={{ position: "relative", height: "100%", width: "100%" }}>
+      <AvatarCanvas />
+      <div
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => {
+          event.preventDefault();
+          const file = event.dataTransfer.files?.[0];
+          if (!file) return;
+          void handleImageFile(file);
+        }}
+        style={{
+          position: "relative",
+          zIndex: 1,
+          height: "100%",
+          maxWidth: 420,
+          padding: 12,
+          margin: 12,
+          background: "rgba(20,20,30,0.92)",
+          color: "#fff",
+          fontFamily: "system-ui",
+          borderRadius: 18,
+          display: "flex",
+          flexDirection: "column",
+        }}
+      >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
         <div style={{ fontSize: 14, opacity: 0.9 }}>Sidekick</div>
 
@@ -598,6 +605,7 @@ export default function App() {
 
       <div style={{ marginTop: 8, fontSize: 11, opacity: 0.6 }}>
         Memory facts saved: {memory.facts.length}
+      </div>
       </div>
     </div>
   );
