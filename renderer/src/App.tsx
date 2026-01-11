@@ -34,6 +34,10 @@ type ChatMessage = {
   };
 };
 
+type LookResponse =
+  | { ok: true; imageBase64: string }
+  | { ok: false; reason: "not-allowed" | "already-pending" | "failed"; message: string };
+
 declare global {
   interface Window {
     electronAPI?: {
@@ -53,14 +57,7 @@ declare global {
       onProactiveMessage: (cb: (message: ChatMessage) => void) => void;
       reportUserActivity: () => void;
       reportUserTyping: () => void;
-      requestLook: () => Promise<
-        | { ok: true; base64: string }
-        | {
-            ok: false;
-            reason: "not-allowed" | "already-pending" | "capture-failed";
-            message: string;
-          }
-      >;
+      requestLook: () => Promise<LookResponse>;
     };
   }
 }
@@ -307,18 +304,12 @@ export default function App() {
         ]);
         return;
       }
-      const fallback =
-        result.reason === "already-pending"
-          ? "I already have a capture queued. Send your next message and I’ll use it."
-          : result.reason === "not-allowed"
-            ? "I can do that in Hang out, not in Focus or Quiet."
-            : "I couldn’t take that capture.";
       setMessages((prev) => [
         ...prev,
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          content: result.message || fallback,
+          content: result.message || "I can't do that right now.",
         },
       ]);
     } catch (err: any) {

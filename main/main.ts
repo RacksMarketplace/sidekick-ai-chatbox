@@ -522,25 +522,27 @@ function getThumbnailSize(
 
 async function capturePrimaryDisplay(): Promise<string> {
   const display = screen.getPrimaryDisplay();
-  const target = getThumbnailSize(display.size.width, display.size.height, 1280, 800);
+  const maxWidth = 1280;
+  const maxHeight = 800;
+  const scale = Math.min(
+    maxWidth / display.size.width,
+    maxHeight / display.size.height,
+    1
+  );
+  const thumbnailSize = {
+    width: Math.max(1, Math.round(display.size.width * scale)),
+    height: Math.max(1, Math.round(display.size.height * scale)),
+  };
   const sources = await desktopCapturer.getSources({
     types: ["screen"],
-    thumbnailSize: {
-      width: target.width,
-      height: target.height,
-    },
+    thumbnailSize,
   });
   const source =
     sources.find((entry) => entry.display_id === String(display.id)) ??
     sources.find((entry) => entry.display_id) ??
     sources[0];
   if (!source) throw new Error("No screen source available");
-  if (source.thumbnail.isEmpty()) {
-    throw new Error("Screen capture failed");
-  }
-  const pngBuffer = source.thumbnail.toPNG();
-  const base64 = pngBuffer.toString("base64");
-  return base64;
+  return source.thumbnail.toPNG().toString("base64");
 }
 
 // -------------------- WINDOW --------------------
@@ -722,24 +724,28 @@ ipcMain.on("proactive:typing", () => {
 
 ipcMain.handle("look:request", async () => {
   if (modeState.effectiveMode !== "active") {
-    return { ok: false, reason: "not-allowed" as const, message: "Screen capture is only available in Hang out." };
+    return {
+      ok: false as const,
+      reason: "not-allowed" as const,
+      message: "I can only do that in Hang out, not in Focus or Quiet.",
+    };
   }
   if (pendingLookImageBase64) {
     return {
-      ok: false,
+      ok: false as const,
       reason: "already-pending" as const,
-      message: "I already have a capture queued. Send your next message and I’ll use it.",
+      message: "I can take another look after the next reply.",
     };
   }
   try {
-    const base64 = await capturePrimaryDisplay();
-    pendingLookImageBase64 = base64;
-    return { ok: true as const, base64 };
+    const imageBase64 = await capturePrimaryDisplay();
+    pendingLookImageBase64 = imageBase64;
+    return { ok: true as const, imageBase64 };
   } catch (error: any) {
     return {
       ok: false as const,
-      reason: "capture-failed" as const,
-      message: error?.message ?? "Screen capture failed.",
+      reason: "failed" as const,
+      message: "I couldn't capture the screen. Please try again.",
     };
   }
 });
@@ -763,7 +769,7 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
   const mem = readMemory();
   const systemPrompt = buildSystemPrompt(modeState, mem);
 
-  const oneShotImage =
+  const oneShotImageBase64 =
     modeState.effectiveMode === "active" ? pendingLookImageBase64 : null;
   pendingLookImageBase64 = null;
 
@@ -773,7 +779,7 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
 
   const payload: ChatMessage[] = [{ role: "system", content: systemPrompt }];
 
-  if (oneShotImage) {
+  if (oneShotImageBase64) {
     payload.push({
       role: "system",
       content: [
@@ -789,7 +795,7 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
 
   payload.push(...filteredMessages);
 
-  if (oneShotImage) {
+  if (oneShotImageBase64) {
     const lastUserIndex = [...payload]
       .map((m, index) => ({ m, index }))
       .reverse()
@@ -797,7 +803,7 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
 
     const imagePart: ChatContentPart = {
       type: "image_url",
-      image_url: { url: `data:image/png;base64,${oneShotImage}` },
+      image_url: { url: `data:image/png;base64,${oneShotImageBase64}` },
     };
 
     if (lastUserIndex !== undefined) {
