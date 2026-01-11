@@ -782,10 +782,6 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
   const latestUserText = getLatestUserText(filteredMessages);
   const wantsVision = hasExplicitVisionIntent(latestUserText);
 
-  if (wantsVision && modeState.effectiveMode !== "active") {
-    return "I can do that in Hang out, not in Focus or Quiet.";
-  }
-
   const latestUserIndex = [...filteredMessages]
     .map((m, index) => ({ m, index }))
     .reverse()
