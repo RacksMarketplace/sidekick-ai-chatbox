@@ -1,69 +1,44 @@
-# CODEX HANDOFF — SIDEKICK BACKBONE v1
+# CODEX HANDOFF — SIDEKICK BACKBONE v2
 
 This document defines the project’s non-negotiable constraints, architecture map, and operating rules.
 If a requested change conflicts with this document, it must NOT be implemented.
 
 ---
 
-## Project Goal
+## Project Overview
 
-Sidekick is a desktop companion that feels calm, optional, and safe to leave open.
-It is NOT a chatbot or a surveillance tool.
-It IS a user-controlled, respectful presence.
+Sidekick is a calm but alive desktop companion for Electron + Vite + React.
+It is a presence, not a tool.
+It is helpful, not restrictive.
+It is alive, not creepy.
+
+---
+
+## How to Run
+
+```bash
+npm install
+npm run dev
+```
 
 ---
 
 ## Core Principles (NON-NEGOTIABLE)
 
 1) The user is always in control.
-2) Inference may adjust behavior, never identity.
+2) One adaptive personality; no focus lock, no gating, no separate personalities.
 3) Explicit beats implicit.
 4) Trust beats cleverness.
 5) Presence beats engagement.
 
 ---
 
-## Internal vs User-Facing Labels
-
-Internal identifiers:
-- serious
-- active
-- idle
-
-User-facing labels (MANDATORY):
-- Focus
-- Hang out
-- Quiet
-
-Never expose the word “mode” to the user.
-
----
-
-## State Definitions
-
-### Focus
-- Purpose: work
-- Behavior: concise, structured, no banter
-- Proactivity: forbidden
-
-### Hang out (Default)
-- Purpose: companionship
-- Behavior: warm, light, brief
-- Proactivity: allowed (gentle only, rate-limited)
-
-### Quiet
-- Purpose: non-intrusion
-- Behavior: minimal, calm responses only when asked
-- Proactivity: forbidden
-
----
-
 ## Architecture Map
 
 **Main process** (`main/main.ts`)
-- Source of truth for state, memory, and vision gating.
-- Computes effective behavior and broadcasts via `mode:update`.
+- Source of truth for context, memory, and vision.
 - Owns OpenAI calls and screenshot capture.
+- Maintains persistent chat history and memory facts.
 
 **Preload bridge** (`main/preload.ts`)
 - Minimal IPC surface only.
@@ -71,13 +46,12 @@ Never expose the word “mode” to the user.
 
 **Renderer** (`renderer/src/App.tsx`)
 - UI only.
-- Detects vision intent for UI feedback only.
+- Detects vision intent for UI feedback only ("Looking…" bubble).
 - Never decides whether capture is allowed.
 
 **Persistence**
 - Chat history: `chat_history.json`
 - Memory facts: `memory.json`
-- Settings: `settings.json`
 
 ---
 
@@ -99,7 +73,15 @@ Forbidden:
 - Reuse of screenshots
 - Any claim of visual access without an attached image
 
-If a request is blocked, the **app** must return a deterministic message without calling the LLM.
+If capture fails, the **app** must return a deterministic message without calling the LLM.
+
+---
+
+## Memory Rules
+
+- Memory is persistent across restarts.
+- Memory is simple facts only.
+- No silent inference. Only user-provided facts are stored.
 
 ---
 
@@ -107,28 +89,30 @@ If a request is blocked, the **app** must return a deterministic message without
 
 - Use Chat Completions only: `POST /v1/chat/completions`.
 - Model: `gpt-4o-mini`.
-- Messages are built in main process.
-- Assistant output must never claim vision without an attached image.
+- Messages are built in the main process.
+- Parse assistant output from `data.choices[0].message.content`.
+- Never claim vision without an attached image.
 
 ---
 
-## Authority & Truth
+## Safety Boundaries
 
-The application state is the source of truth.
-The assistant must report state, not reason about it.
-Never invent restrictions or contradict the UI.
-
----
-
-## Constraints (DO NOT VIOLATE)
-
-- OpenAI calls stay in the main process.
-- `contextIsolation` remains enabled.
-- Preload bridge stays minimal.
-- No hidden permissions.
-- No background surveillance.
+- No always-on screen capture.
+- No background vision.
+- No OpenAI Responses API.
+- No hidden restrictions or hidden-state language.
 - No emotional dependency language.
-- No anthropomorphized control (“I decided”, “I locked you”).
+
+---
+
+## Extending the System (Without Breaking Behavior)
+
+When adding features:
+- Keep the single adaptive personality.
+- Never introduce focus locks or gating.
+- Treat vision as one-shot and user-invoked only.
+- Keep proactivity rare and ignorable.
+- Ensure UI remains simple and calm.
 
 ---
 

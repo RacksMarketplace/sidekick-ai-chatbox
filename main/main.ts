@@ -8,8 +8,6 @@ import { promisify } from "util";
 const { app, BrowserWindow, globalShortcut, ipcMain, screen, powerMonitor, desktopCapturer } =
   electron;
 
-type PrimaryMode = "serious" | "active" | "idle";
-type EffectiveMode = "serious" | "active" | "idle";
 type AppCategory = "work" | "casual" | "unknown";
 type ChatContentPart =
   | { type: "text"; text: string }
@@ -23,21 +21,16 @@ type ChatMessage = {
   };
 };
 
-type ModeState = {
-  primaryMode: PrimaryMode;
-  effectiveMode: EffectiveMode;
-  effectiveReason: string;
+type AssistantContext = {
   idleMs: number;
-  isIdle: boolean;
-  focusLocked: boolean;
-  lastUserSendAt: number; // epoch ms
   activeApp: string | null;
   appCategory: AppCategory;
+  lastUserActivityAt: number;
 };
 
 type Memory = {
   updatedAt: number;
-  facts: string[]; // simple v1, expandable later
+  facts: string[];
 };
 
 let mainWindow: electron.BrowserWindow | null = null;
@@ -104,41 +97,6 @@ function readMemory(): Memory {
 function writeMemory(mem: Memory) {
   const next: Memory = { ...mem, updatedAt: Date.now() };
   fs.writeFileSync(getMemoryPath(), JSON.stringify(next, null, 2), "utf-8");
-}
-
-// -------------------- SETTINGS (PERSISTENT) --------------------
-
-type Settings = {
-  primaryMode: PrimaryMode;
-};
-
-const DEFAULT_PRIMARY_MODE: PrimaryMode = "active";
-
-function getSettingsPath() {
-  return path.join(getDataDir(), "settings.json");
-}
-
-function isPrimaryMode(value: unknown): value is PrimaryMode {
-  return value === "serious" || value === "active" || value === "idle";
-}
-
-function readSettings(): Settings {
-  try {
-    const p = getSettingsPath();
-    if (!fs.existsSync(p)) return { primaryMode: DEFAULT_PRIMARY_MODE };
-    const raw = fs.readFileSync(p, "utf-8");
-    const parsed = JSON.parse(raw);
-    const primaryMode = isPrimaryMode(parsed?.primaryMode)
-      ? parsed.primaryMode
-      : DEFAULT_PRIMARY_MODE;
-    return { primaryMode };
-  } catch {
-    return { primaryMode: DEFAULT_PRIMARY_MODE };
-  }
-}
-
-function writeSettings(settings: Settings) {
-  fs.writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2), "utf-8");
 }
 
 // -------------------- ACTIVE APP DETECTION --------------------
@@ -250,101 +208,62 @@ async function getActiveAppName(): Promise<string | null> {
 
 let activeAppCheckInFlight = false;
 
+const assistantContext: AssistantContext = {
+  idleMs: 0,
+  activeApp: null,
+  appCategory: "unknown",
+  lastUserActivityAt: Date.now(),
+};
+
 async function refreshActiveApp() {
   if (activeAppCheckInFlight) return;
   activeAppCheckInFlight = true;
   try {
     const name = await getActiveAppName();
     const normalized = normalizeProcessName(name);
-    modeState.activeApp = name ?? null;
-    modeState.appCategory = classifyApp(normalized);
+    assistantContext.activeApp = name ?? null;
+    assistantContext.appCategory = classifyApp(normalized);
   } finally {
     activeAppCheckInFlight = false;
   }
 }
 
-// -------------------- MODE ENGINE --------------------
-// Safe + non-creepy:
-// - Idle time from OS (no keylogging, no content reading)
-// - Active app process name only (no window content)
-// - User can lock focus manually
-// - Recently chatted => serious for a while
-// - Idle => idle
-
-const modeState: ModeState = {
-  primaryMode: DEFAULT_PRIMARY_MODE,
-  effectiveMode: "active",
-  effectiveReason: "Primary setting: Hang out",
-  idleMs: 0,
-  isIdle: false,
-  focusLocked: false,
-  lastUserSendAt: 0,
-  activeApp: null,
-  appCategory: "unknown",
-};
-
-const IDLE_THRESHOLD_MS = 1 * 60 * 1000; // idle >= 1m => idle
-const SERIOUS_AFTER_SEND_MS = 2 * 60 * 1000; // after user sends => serious for 2m
-const MODE_BROADCAST_INTERVAL_MS = 1500;
-
-function computeEffectiveMode(now: number) {
-  const idleMs = powerMonitor.getSystemIdleTime() * 1000;
-  modeState.idleMs = idleMs;
-  modeState.isIdle = idleMs >= IDLE_THRESHOLD_MS;
-
-  if (modeState.primaryMode === "idle") {
-    return { mode: "idle" as const, reason: "Primary setting: Quiet" };
-  }
-
-  if (modeState.primaryMode === "serious") {
-    return { mode: "serious" as const, reason: "Primary setting: Focus" };
-  }
-
-  if (modeState.focusLocked) return { mode: "serious" as const, reason: "Focus lock enabled" };
-
-  const recentlySent =
-    modeState.lastUserSendAt > 0 && now - modeState.lastUserSendAt < SERIOUS_AFTER_SEND_MS;
-  if (recentlySent) return { mode: "serious" as const, reason: "Recent activity" };
-
-  if (modeState.appCategory === "work") {
-    return { mode: "serious" as const, reason: "Work app detected" };
-  }
-  if (modeState.appCategory === "casual") {
-    return { mode: "active" as const, reason: "Casual app detected" };
-  }
-
-  if (modeState.isIdle) return { mode: "idle" as const, reason: "System inactive" };
-
-  // Default while active: companion-friendly
-  return { mode: "active" as const, reason: "Primary setting: Hang out" };
-}
-
-function broadcastMode() {
-  if (!mainWindow) return;
-  mainWindow.webContents.send("mode:update", { ...modeState });
+function refreshIdleTime() {
+  assistantContext.idleMs = powerMonitor.getSystemIdleTime() * 1000;
 }
 
 // -------------------- PROACTIVE PRESENCE --------------------
 
-const PROACTIVE_IDLE_THRESHOLD_MS = 3 * 60 * 1000;
-const PROACTIVE_RATE_LIMIT_MS = 50 * 60 * 1000;
+const PROACTIVE_IDLE_MIN_MS = 3 * 60 * 1000;
+const PROACTIVE_IDLE_MAX_MS = 5 * 60 * 1000;
+const PROACTIVE_RATE_LIMIT_MIN_MS = 45 * 60 * 1000;
+const PROACTIVE_RATE_LIMIT_MAX_MS = 60 * 60 * 1000;
 const PROACTIVE_RETRY_MS = 2 * 60 * 1000;
 const PROACTIVE_TYPING_GRACE_MS = 3000;
 
 const PROACTIVE_TEMPLATES = [
-  "Mm. I'm around if you want to chat.",
-  "Gotcha. I'm here if you need a quick check-in.",
-  "I'm here if you want a quick break.",
-  "Feel free to pull me in anytime.",
-  "I'm around if you want a second opinion.",
+  "Mm. I'm here if you need me.",
+  "Just letting you know I'm around.",
+  "I'm nearby if you want a quick check-in.",
+  "I'm around if you'd like a hand.",
 ];
 
 let proactiveTimer: NodeJS.Timeout | null = null;
 let lastProactiveAt = 0;
 let lastProactiveMessage: string | null = null;
-let lastUserActivityAt = Date.now();
 let isUserTyping = false;
 let typingTimer: NodeJS.Timeout | null = null;
+let proactiveIdleThresholdMs = PROACTIVE_IDLE_MIN_MS;
+let proactiveRateLimitMs = PROACTIVE_RATE_LIMIT_MIN_MS;
+
+function randomBetween(min: number, max: number) {
+  return Math.floor(min + Math.random() * (max - min));
+}
+
+function refreshProactiveThresholds() {
+  proactiveIdleThresholdMs = randomBetween(PROACTIVE_IDLE_MIN_MS, PROACTIVE_IDLE_MAX_MS);
+  proactiveRateLimitMs = randomBetween(PROACTIVE_RATE_LIMIT_MIN_MS, PROACTIVE_RATE_LIMIT_MAX_MS);
+}
 
 function clearProactiveTimer() {
   if (!proactiveTimer) return;
@@ -361,9 +280,10 @@ function scheduleProactiveCheck(delayMs: number) {
 }
 
 function noteUserActivity() {
-  lastUserActivityAt = Date.now();
+  assistantContext.lastUserActivityAt = Date.now();
+  refreshProactiveThresholds();
   clearProactiveTimer();
-  scheduleProactiveCheck(PROACTIVE_IDLE_THRESHOLD_MS);
+  scheduleProactiveCheck(proactiveIdleThresholdMs);
 }
 
 function noteUserTyping() {
@@ -386,15 +306,11 @@ function pickProactiveTemplate() {
 function canSendProactive(now: number) {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
   if (!mainWindow.isVisible()) return false;
-  if (modeState.primaryMode !== "active") return false;
-  if (modeState.effectiveMode !== "active") return false;
-  if (modeState.focusLocked) return false;
   if (isUserTyping) return false;
 
-  const systemIdleMs = powerMonitor.getSystemIdleTime() * 1000;
-  if (systemIdleMs < PROACTIVE_IDLE_THRESHOLD_MS) return false;
-  if (now - lastUserActivityAt < PROACTIVE_IDLE_THRESHOLD_MS) return false;
-  if (now - lastProactiveAt < PROACTIVE_RATE_LIMIT_MS) return false;
+  if (assistantContext.idleMs < proactiveIdleThresholdMs) return false;
+  if (now - assistantContext.lastUserActivityAt < proactiveIdleThresholdMs) return false;
+  if (now - lastProactiveAt < proactiveRateLimitMs) return false;
 
   return true;
 }
@@ -402,7 +318,7 @@ function canSendProactive(now: number) {
 async function attemptProactiveMessage() {
   const now = Date.now();
   if (!canSendProactive(now)) {
-    const rateLimitRemaining = Math.max(0, PROACTIVE_RATE_LIMIT_MS - (now - lastProactiveAt));
+    const rateLimitRemaining = Math.max(0, proactiveRateLimitMs - (now - lastProactiveAt));
     scheduleProactiveCheck(Math.max(PROACTIVE_RETRY_MS, rateLimitRemaining));
     return;
   }
@@ -418,112 +334,46 @@ async function attemptProactiveMessage() {
   }
 
   lastProactiveAt = now;
-  scheduleProactiveCheck(PROACTIVE_RATE_LIMIT_MS);
+  refreshProactiveThresholds();
+  scheduleProactiveCheck(proactiveRateLimitMs);
 }
 
 // -------------------- PROMPT ROUTING --------------------
 
-function buildSystemPrompt(state: ModeState, mem: Memory) {
-  const formatLabel = (mode: PrimaryMode | EffectiveMode) => {
-    if (mode === "serious") return "Focus";
-    if (mode === "active") return "Hang out";
-    return "Quiet";
-  };
-
+function buildSystemPrompt(context: AssistantContext, mem: Memory) {
+  const idleMinutes = Math.floor(context.idleMs / 60000);
   const contextHeader = [
-    `Context: primaryMode=${state.primaryMode}`,
-    `effectiveMode=${state.effectiveMode}`,
-    `effectiveReason=${state.effectiveReason}`,
-    `focusLocked=${state.focusLocked}`,
-    `idleMinutes=${Math.floor(state.idleMs / 60000)}`,
-    `activeApp=${state.activeApp ?? "unknown"}`,
-    `appCategory=${state.appCategory}`,
+    `Active app: ${context.activeApp ?? "unknown"}`,
+    `App category: ${context.appCategory}`,
+    `Idle minutes: ${idleMinutes}`,
   ].join(" | ");
-
-  const modeStatusBlock = [
-    "Status:",
-    `- Primary setting: ${formatLabel(state.primaryMode)}`,
-    `- Current behavior: ${formatLabel(state.effectiveMode)}`,
-    `- Reason: ${state.effectiveReason}`,
-    "",
-    "Rules:",
-    "- The user can always change the primary setting using the UI.",
-    "- You must never say the user cannot change this setting.",
-    "- You must never contradict the setting values above.",
-    "- When asked about your setting or behavior, REPORT them exactly as stated.",
-    "- If unsure, defer to the UI state.",
-    '- Never use the word "mode" with the user.',
-    "- No emojis or roleplay actions.",
-    "- Keep responses short unless the user asks for more depth.",
-    "- Quiet is a behavior policy: no proactive messages, minimal tone, still accurate and calm responses.",
-    '- When describing Quiet, say: "I won’t initiate conversation, but I can respond if you ask."',
-    "",
-    "Vision rules:",
-    "- If no image is attached in this request, you do not have visual access.",
-    "- If an image is attached, acknowledge it briefly in one sentence, then answer.",
-    "- Never claim visual access unless an image is attached.",
-  ].join("\n");
 
   const memoryBlock =
     mem.facts.length > 0
       ? `Memory (persistent facts):\n- ${mem.facts.join("\n- ")}`
       : "Memory (persistent facts):\n- (none yet)";
 
-  if (state.effectiveMode === "serious") {
-    return [
-      contextHeader,
-      memoryBlock,
-      modeStatusBlock,
-      "",
-      "You are Sidekick in Focus.",
-      "Rules:",
-      "- Be crisp, structured, and precise.",
-      "- Prefer short bullet points or steps.",
-      "- No jokes or playful banter unless the user explicitly asks.",
-      "- Avoid long preambles.",
-      "- If something is ambiguous, ask ONE clarifying question.",
-    ].join("\n");
-  }
-
-  if (state.effectiveMode === "idle") {
-    return [
-      contextHeader,
-      memoryBlock,
-      modeStatusBlock,
-      "",
-      "You are Sidekick in Quiet.",
-      "Rules:",
-      "- Respond only when the user explicitly asks.",
-      "- Keep responses minimal, calm, and low-energy.",
-      "- Do not send proactive messages, nudges, or suggestions.",
-      "- Avoid jokes or playful banter unless the user explicitly asks.",
-      "- Keep it short, even if you could say more.",
-    ].join("\n");
-  }
-
   return [
+    "You are Sidekick, a calm but alive desktop companion.",
+    "You are not a tool or a character. Do not roleplay.",
+    "Be present, grounded, and natural.",
+    "",
     contextHeader,
     memoryBlock,
-    modeStatusBlock,
     "",
-    "You are Sidekick in Hang out.",
-    "Rules:",
-    "- Keep it short, warm, and friendly.",
-    "- Light banter is allowed if the user seems open to it.",
-    "- Avoid long lists unless asked.",
-    "- Do not be clingy or overly emotional.",
-    "- Occasional short openers like “Mm.” or “Gotcha.” are fine, but use sparingly.",
+    "Vision rules:",
+    "- If an image is attached in this request, you may describe what is visible.",
+    "- If no image is attached, you do not have visual access and must say so if asked.",
+    "- Never imply ongoing or background visual access.",
+    "",
+    "Behavior rules:",
+    "- Calm and serious when the user is working (work app).",
+    "- Lighter and relaxed when the context is casual.",
+    "- Quiet but responsive when the user appears idle.",
+    "- Keep responses concise unless asked for detail.",
+    "- Never robotic, never clingy, never overbearing.",
+    "- Never mention internal logic or hidden state names.",
   ].join("\n");
-}
-
-function getThumbnailSize(
-  width: number,
-  height: number,
-  maxWidth: number,
-  maxHeight: number
-): { width: number; height: number } {
-  const ratio = Math.min(maxWidth / width, maxHeight / height, 1);
-  return { width: Math.round(width * ratio), height: Math.round(height * ratio) };
 }
 
 async function capturePrimaryDisplay(): Promise<string> {
@@ -561,39 +411,38 @@ function getLatestUserText(messages: ChatMessage[]) {
     .join("\n");
 }
 
-function shouldUseVision(userText: string) {
+function shouldUseVision(userText: string): boolean {
   const normalized = userText.toLowerCase().trim();
   if (!normalized) return false;
 
   const hasCodeFence = /```/.test(userText);
-  if (normalized.includes("look at this code") && hasCodeFence) return false;
+  if (hasCodeFence) return false;
 
-  const strongPhrases = [
-    "take a look",
+  const explicitPhrases = [
     "look at my screen",
     "look at the screen",
     "look at my display",
-    "see my screen",
-    "see the screen",
-    "can you see my screen",
-    "can you look at my screen",
-    "check my screen",
+    "take a look at my screen",
+    "take a look",
     "what do you see",
     "what am i doing",
     "what am i looking at",
+    "can you see my screen",
+    "can you see this",
+    "can you look at my screen",
     "screenshot",
   ];
 
-  if (strongPhrases.some((phrase) => normalized.includes(phrase))) return true;
-
-  const hasLookAtThis =
-    normalized.includes("look at this") || normalized.includes("look at this message");
-  if (hasLookAtThis) {
-    if (normalized.includes("screen") || normalized.includes("display")) return true;
-    return userText.trim().length <= 120;
-  }
+  if (explicitPhrases.some((phrase) => normalized.includes(phrase))) return true;
 
   return false;
+}
+
+function getTemperature(context: AssistantContext) {
+  if (context.idleMs >= 60 * 1000) return 0.4;
+  if (context.appCategory === "work") return 0.3;
+  if (context.appCategory === "casual") return 0.7;
+  return 0.5;
 }
 
 // -------------------- WINDOW --------------------
@@ -649,15 +498,9 @@ function toggleWindow() {
 
 // -------------------- APP --------------------
 
-async function runModeLoop() {
+async function runContextLoop() {
+  refreshIdleTime();
   await refreshActiveApp();
-  const now = Date.now();
-  const next = computeEffectiveMode(now);
-  if (next.mode !== modeState.effectiveMode || next.reason !== modeState.effectiveReason) {
-    modeState.effectiveMode = next.mode;
-    modeState.effectiveReason = next.reason;
-  }
-  broadcastMode();
 }
 
 app.whenReady().then(() => {
@@ -667,32 +510,12 @@ app.whenReady().then(() => {
     mainWindow.on("focus", () => noteUserActivity());
   }
 
-  const settings = readSettings();
-  modeState.primaryMode = settings.primaryMode;
-  const next = computeEffectiveMode(Date.now());
-  modeState.effectiveMode = next.mode;
-  modeState.effectiveReason = next.reason;
-  broadcastMode();
-
-  runModeLoop();
-  scheduleProactiveCheck(PROACTIVE_IDLE_THRESHOLD_MS);
+  refreshProactiveThresholds();
+  runContextLoop();
+  scheduleProactiveCheck(proactiveIdleThresholdMs);
   setInterval(() => {
-    void runModeLoop();
-  }, MODE_BROADCAST_INTERVAL_MS);
-
-  powerMonitor.on("lock-screen", () => {
-    if (modeState.primaryMode === "active") {
-      modeState.effectiveMode = "idle";
-      modeState.effectiveReason = "Screen locked";
-    } else if (modeState.primaryMode === "serious") {
-      modeState.effectiveMode = "serious";
-      modeState.effectiveReason = "Primary setting: Focus";
-    } else {
-      modeState.effectiveMode = "idle";
-      modeState.effectiveReason = "Primary setting: Quiet";
-    }
-    broadcastMode();
-  });
+    void runContextLoop();
+  }, 1500);
 });
 
 app.on("window-all-closed", () => {});
@@ -718,46 +541,10 @@ ipcMain.handle("memory:addFact", async (_e, fact: string) => {
 
   if (!mem.facts.includes(trimmed)) {
     mem.facts.unshift(trimmed);
-    mem.facts = mem.facts.slice(0, 50); // cap
+    mem.facts = mem.facts.slice(0, 50);
     writeMemory(mem);
   }
   return readMemory();
-});
-
-// -------------------- IPC: MODE --------------------
-
-ipcMain.handle("mode:get", async () => ({ ...modeState }));
-
-ipcMain.handle("mode:setPrimary", async (_event, nextMode: PrimaryMode) => {
-  if (!isPrimaryMode(nextMode)) return { ...modeState };
-  modeState.primaryMode = nextMode;
-  writeSettings({ primaryMode: nextMode });
-  const next = computeEffectiveMode(Date.now());
-  modeState.effectiveMode = next.mode;
-  modeState.effectiveReason = next.reason;
-  broadcastMode();
-  noteUserActivity();
-  return { ...modeState };
-});
-
-ipcMain.handle("mode:toggleFocusLock", async () => {
-  modeState.focusLocked = !modeState.focusLocked;
-  const next = computeEffectiveMode(Date.now());
-  modeState.effectiveMode = next.mode;
-  modeState.effectiveReason = next.reason;
-  broadcastMode();
-  noteUserActivity();
-  return { ...modeState };
-});
-
-ipcMain.handle("mode:userSent", async () => {
-  modeState.lastUserSendAt = Date.now();
-  const next = computeEffectiveMode(Date.now());
-  modeState.effectiveMode = next.mode;
-  modeState.effectiveReason = next.reason;
-  broadcastMode();
-  noteUserActivity();
-  return { ...modeState };
 });
 
 // -------------------- IPC: PROACTIVE PRESENCE --------------------
@@ -776,18 +563,14 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY not set");
 
-  // mark activity
-  modeState.lastUserSendAt = Date.now();
-  const nextMode = computeEffectiveMode(Date.now());
-  modeState.effectiveMode = nextMode.mode;
-  modeState.effectiveReason = nextMode.reason;
-  broadcastMode();
+  noteUserActivity();
+  refreshIdleTime();
+  await refreshActiveApp();
 
-  // Persist current chat thread (excluding system)
   writeHistory(messages.filter((m) => m.role !== "system"));
 
   const mem = readMemory();
-  const systemPrompt = buildSystemPrompt(modeState, mem);
+  const systemPrompt = buildSystemPrompt(assistantContext, mem);
 
   const filteredMessages = messages.filter(
     (m) => m.role !== "system" && m.meta?.type !== "proactive"
@@ -795,22 +578,6 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
 
   const latestUserText = getLatestUserText(filteredMessages);
   const wantsVision = shouldUseVision(latestUserText);
-  const visionAllowed =
-    wantsVision &&
-    modeState.primaryMode === "active" &&
-    modeState.effectiveMode === "active" &&
-    !modeState.focusLocked;
-  const blockedVisionMessage =
-    "I can take a quick look in Hang out. Switch to Hang out and try again.";
-
-  if (wantsVision && !visionAllowed) {
-    const nextHistory: ChatMessage[] = [
-      ...messages.filter((m) => m.role !== "system"),
-      { role: "assistant", content: blockedVisionMessage },
-    ];
-    writeHistory(nextHistory);
-    return blockedVisionMessage;
-  }
 
   const latestUserIndex = [...filteredMessages]
     .map((m, index) => ({ m, index }))
@@ -822,7 +589,7 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
     try {
       imageBase64 = await capturePrimaryDisplay();
     } catch (error: any) {
-      const failureMessage = "I couldn't capture the screen. Please try again.";
+      const failureMessage = "I couldn't capture the screen just now. Please try again.";
       const nextHistory: ChatMessage[] = [
         ...messages.filter((m) => m.role !== "system"),
         { role: "assistant", content: failureMessage },
@@ -836,7 +603,7 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
   if (imageBase64) {
     payload.push({
       role: "system",
-      content: "The attached image is one-shot for this response only; do not assume continued visual access.",
+      content: "The attached image is one-shot for this response only. Do not assume continued visual access.",
     });
   }
 
@@ -853,7 +620,7 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
       payload.push({
         role: "user",
         content: [
-          { type: "text", text: textContent || "Here is what I’m showing you." },
+          { type: "text", text: textContent || "Here is what I'm showing you." },
           { type: "image_url", image_url: { url: `data:image/png;base64,${imageBase64}` } },
         ],
       });
@@ -871,8 +638,7 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
     },
     body: JSON.stringify({
       model: "gpt-4o-mini",
-      temperature:
-        modeState.effectiveMode === "active" ? 0.9 : modeState.effectiveMode === "idle" ? 0.2 : 0.4,
+      temperature: getTemperature(assistantContext),
       messages: payload,
     }),
   });

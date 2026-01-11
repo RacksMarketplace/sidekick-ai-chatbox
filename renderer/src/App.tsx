@@ -1,16 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
-
-type PrimaryMode = "serious" | "active" | "idle";
-type EffectiveMode = "serious" | "active" | "idle";
-type ModeState = {
-  primaryMode: PrimaryMode;
-  effectiveMode: EffectiveMode;
-  effectiveReason: string;
-  idleMs: number;
-  isIdle: boolean;
-  focusLocked: boolean;
-  lastUserSendAt: number;
-};
+import { useEffect, useState } from "react";
 
 type Memory = {
   updatedAt: number;
@@ -45,11 +33,6 @@ declare global {
       getMemory: () => Promise<Memory>;
       addMemoryFact: (fact: string) => Promise<Memory>;
 
-      getMode: () => Promise<ModeState>;
-      setPrimaryMode: (mode: PrimaryMode) => Promise<ModeState>;
-      toggleFocusLock: () => Promise<ModeState>;
-      markUserSent: () => Promise<ModeState>;
-      onModeUpdate: (cb: (state: ModeState) => void) => void;
       onProactiveMessage: (cb: (message: ChatMessage) => void) => void;
       reportUserActivity: () => void;
       reportUserTyping: () => void;
@@ -57,89 +40,31 @@ declare global {
   }
 }
 
-function msToMin(ms: number) {
-  return Math.floor(ms / 60000);
-}
-
-function formatModeLabel(mode: PrimaryMode | EffectiveMode) {
-  if (mode === "serious") return "Focus";
-  if (mode === "active") return "Hang out";
-  return "Quiet";
-}
-
 function shouldUseVision(userText: string) {
   const normalized = userText.toLowerCase().trim();
   if (!normalized) return false;
 
   const hasCodeFence = /```/.test(userText);
-  if (normalized.includes("look at this code") && hasCodeFence) return false;
+  if (hasCodeFence) return false;
 
-  const strongPhrases = [
-    "take a look",
+  const explicitPhrases = [
     "look at my screen",
     "look at the screen",
     "look at my display",
-    "see my screen",
-    "see the screen",
-    "can you see my screen",
-    "can you look at my screen",
-    "check my screen",
+    "take a look at my screen",
+    "take a look",
     "what do you see",
     "what am i doing",
     "what am i looking at",
+    "can you see my screen",
+    "can you see this",
+    "can you look at my screen",
     "screenshot",
   ];
 
-  if (strongPhrases.some((phrase) => normalized.includes(phrase))) return true;
-
-  const hasLookAtThis =
-    normalized.includes("look at this") || normalized.includes("look at this message");
-  if (hasLookAtThis) {
-    if (normalized.includes("screen") || normalized.includes("display")) return true;
-    return userText.trim().length <= 120;
-  }
+  if (explicitPhrases.some((phrase) => normalized.includes(phrase))) return true;
 
   return false;
-}
-
-const MODE_QUESTION_PATTERNS = new Set([
-  "what mode am i in",
-  "what mode are you in",
-  "what mode now",
-  "why are you in serious mode",
-  "how do i change modes",
-  "how do i go to active mode",
-  "why are you in focus",
-  "how do i change this setting",
-  "how do i go to hang out",
-  "are you quiet",
-  "are you idle",
-  "what setting am i in",
-  "what are you set to",
-  "what are you on right now",
-]);
-
-function normalizeModeQuestion(text: string) {
-  return text
-    .toLowerCase()
-    .replace(/[^\w\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function isModeQuestion(text: string) {
-  return MODE_QUESTION_PATTERNS.has(normalizeModeQuestion(text));
-}
-
-function buildModeResponse(state: ModeState) {
-  const primary = formatModeLabel(state.primaryMode);
-  const effective = formatModeLabel(state.effectiveMode);
-  return [
-    `Primary setting: ${primary}.`,
-    `Current behavior: ${effective}.`,
-    `Reason: ${state.effectiveReason}.`,
-    "You can change this setting using the buttons at the top.",
-  ].join("\n");
 }
 
 export default function App() {
@@ -152,26 +77,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [, setLookingMessageId] = useState<string | null>(null);
 
-  const [modeState, setModeState] = useState<ModeState>({
-    primaryMode: "active",
-    effectiveMode: "active",
-    effectiveReason: "Primary setting: Hang out",
-    idleMs: 0,
-    isIdle: false,
-    focusLocked: false,
-    lastUserSendAt: 0,
-  });
-
   const [memory, setMemory] = useState<Memory>({ updatedAt: Date.now(), facts: [] });
   const [rememberText, setRememberText] = useState("");
-
-  const primaryLabel = useMemo(() => {
-    return formatModeLabel(modeState.primaryMode);
-  }, [modeState.primaryMode]);
-
-  const effectiveLabel = useMemo(() => {
-    return formatModeLabel(modeState.effectiveMode);
-  }, [modeState.effectiveMode]);
 
   // If preload bridge isn't available, show a useful message instead of white screen
   useEffect(() => {
@@ -187,7 +94,7 @@ export default function App() {
     setFatal(null);
   }, [api]);
 
-  // Load history + memory + mode safely
+  // Load history + memory
   useEffect(() => {
     (async () => {
       if (!api) return;
@@ -215,19 +122,6 @@ export default function App() {
       }
 
       try {
-        const initial = await api.getMode();
-        setModeState(initial);
-      } catch (e: any) {
-        setFatal(`Mode load failed: ${e?.message ?? String(e)}`);
-      }
-
-      try {
-        api.onModeUpdate((state) => setModeState(state));
-      } catch (e: any) {
-        setFatal(`Mode subscription failed: ${e?.message ?? String(e)}`);
-      }
-
-      try {
         api.onProactiveMessage((message) => {
           if (message.role !== "assistant") return;
           setMessages((prev) => [
@@ -244,23 +138,6 @@ export default function App() {
   async function sendMessage() {
     if (!api) return;
     if (!input.trim() || loading) return;
-
-    if (isModeQuestion(input)) {
-      const userMsg: Message = {
-        id: crypto.randomUUID(),
-        role: "user",
-        content: input.trim(),
-      };
-      const reply = buildModeResponse(modeState);
-      setMessages((prev) => [
-        ...prev,
-        userMsg,
-        { id: crypto.randomUUID(), role: "assistant", content: reply },
-      ]);
-      setInput("");
-      api.reportUserActivity?.();
-      return;
-    }
 
     const trimmedInput = input.trim();
     const wantsVision = shouldUseVision(trimmedInput);
@@ -281,15 +158,15 @@ export default function App() {
     setLookingMessageId(lookingId);
 
     try {
-      await api.markUserSent();
+      api.reportUserActivity?.();
 
       const payload: ChatMessage[] = nextUI
         .filter((m) => m.meta?.type !== "looking")
         .map((m) => ({
-        role: m.role,
-        content: m.content,
-        meta: m.meta,
-      }));
+          role: m.role,
+          content: m.content,
+          meta: m.meta,
+        }));
       const reply = await api.chat(payload);
 
       setMessages((prev) => {
@@ -316,18 +193,6 @@ export default function App() {
     setMessages([]);
   }
 
-  async function toggleFocusLock() {
-    if (!api) return;
-    const next = await api.toggleFocusLock();
-    setModeState(next);
-  }
-
-  async function setPrimaryMode(nextMode: PrimaryMode) {
-    if (!api) return;
-    const next = await api.setPrimaryMode(nextMode);
-    setModeState(next);
-  }
-
   async function rememberFact() {
     if (!api) return;
     const text = rememberText.trim();
@@ -352,57 +217,9 @@ export default function App() {
     >
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <div style={{ fontSize: 14, opacity: 0.9 }}>Sidekick</div>
-          <div style={{ fontSize: 12, opacity: 0.65 }}>
-            Primary: <b>{primaryLabel}</b> · Effective: <b>{effectiveLabel}</b>{" "}
-            <span style={{ opacity: 0.75 }}>({modeState.effectiveReason})</span> · Inactivity:{" "}
-            {msToMin(modeState.idleMs)}m
-          </div>
-        </div>
+        <div style={{ fontSize: 14, opacity: 0.9 }}>Sidekick</div>
 
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <div style={{ display: "flex", gap: 6 }}>
-            {([
-              { value: "serious", label: "Focus" },
-              { value: "active", label: "Hang out" },
-              { value: "idle", label: "Quiet" },
-            ] as const).map((option) => (
-              <button
-                key={option.value}
-                onClick={() => setPrimaryMode(option.value)}
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: 999,
-                  border: "1px solid rgba(255,255,255,0.15)",
-                  background:
-                    modeState.primaryMode === option.value
-                      ? "rgba(79,140,255,0.35)"
-                      : "rgba(255,255,255,0.06)",
-                  color: "#fff",
-                  fontSize: 12,
-                  cursor: "pointer",
-                }}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-          <button
-            onClick={toggleFocusLock}
-            style={{
-              padding: "6px 10px",
-              borderRadius: 999,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: modeState.focusLocked ? "rgba(79,140,255,0.35)" : "rgba(255,255,255,0.06)",
-              color: "#fff",
-              fontSize: 12,
-              cursor: "pointer",
-            }}
-          >
-            {modeState.focusLocked ? "Unlock focus" : "Lock focus"}
-          </button>
-
           <button
             onClick={newChat}
             style={{
