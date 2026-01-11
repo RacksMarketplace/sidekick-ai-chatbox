@@ -42,8 +42,6 @@ type Memory = {
 
 let mainWindow: electron.BrowserWindow | null = null;
 
-let pendingLookImage: string | null = null;
-
 const execFileAsync = promisify(execFile);
 
 // -------------------- STORAGE --------------------
@@ -512,19 +510,54 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
 
 async function capturePrimaryDisplay(): Promise<string> {
   const display = screen.getPrimaryDisplay();
+  const maxWidth = 1280;
+  const maxHeight = 800;
+  const scale = Math.min(
+    maxWidth / display.size.width,
+    maxHeight / display.size.height,
+    1
+  );
+  const thumbnailSize = {
+    width: Math.max(1, Math.round(display.size.width * scale)),
+    height: Math.max(1, Math.round(display.size.height * scale)),
+  };
   const sources = await desktopCapturer.getSources({
     types: ["screen"],
-    thumbnailSize: {
-      width: display.size.width,
-      height: display.size.height,
-    },
+    thumbnailSize,
   });
   const source =
     sources.find((entry) => entry.display_id === String(display.id)) ??
     sources.find((entry) => entry.display_id) ??
     sources[0];
   if (!source) throw new Error("No screen source available");
-  return source.thumbnail.toDataURL();
+  return source.thumbnail.toPNG().toString("base64");
+}
+
+function getLatestUserText(messages: ChatMessage[]) {
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  if (!lastUser) return "";
+  if (typeof lastUser.content === "string") return lastUser.content;
+  return lastUser.content
+    .filter((part) => part.type === "text")
+    .map((part) => part.text)
+    .join("\n");
+}
+
+function hasExplicitVisionIntent(text: string) {
+  const normalized = text.toLowerCase();
+  const patterns = [
+    "look at my screen",
+    "look at the screen",
+    "look at this",
+    "see my screen",
+    "see the screen",
+    "what's on my screen",
+    "whats on my screen",
+    "can you see my screen",
+    "can you look at my screen",
+    "check my screen",
+  ];
+  return patterns.some((pattern) => normalized.includes(pattern));
 }
 
 // -------------------- WINDOW --------------------
@@ -635,7 +668,6 @@ ipcMain.handle("history:load", async () => readHistory());
 
 ipcMain.handle("history:clear", async () => {
   writeHistory([]);
-  pendingLookImage = null;
   return true;
 });
 
@@ -702,20 +734,6 @@ ipcMain.on("proactive:typing", () => {
   noteUserTyping();
 });
 
-// -------------------- IPC: LOOK AT THIS --------------------
-
-ipcMain.handle("look:request", async () => {
-  if (modeState.effectiveMode !== "active") {
-    return { ok: false, reason: "not-allowed" as const };
-  }
-  if (pendingLookImage) {
-    return { ok: false, reason: "already-pending" as const };
-  }
-  const imageUrl = await capturePrimaryDisplay();
-  pendingLookImage = imageUrl;
-  return { ok: true as const };
-});
-
 // -------------------- IPC: AI CHAT --------------------
 
 ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
@@ -735,65 +753,55 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
   const mem = readMemory();
   const systemPrompt = buildSystemPrompt(modeState, mem);
 
-  const oneShotImage = modeState.effectiveMode === "active" ? pendingLookImage : null;
-  pendingLookImage = null;
-
   const filteredMessages = messages.filter(
     (m) => m.role !== "system" && m.meta?.type !== "proactive"
   );
 
-  const payload: ChatMessage[] = [{ role: "system", content: systemPrompt }];
+  const latestUserText = getLatestUserText(filteredMessages);
+  const wantsVision = hasExplicitVisionIntent(latestUserText);
 
-  if (oneShotImage) {
-    payload.push({
-      role: "system",
-      content: [
-        {
-          type: "text",
-          text:
-            "The user provided an image for this next response only. The image is user-provided, " +
-            "one-shot, and does not persist. Do not assume it remains available or refer to past images.",
-        },
-      ],
-    });
+  if (wantsVision && modeState.effectiveMode !== "active") {
+    return "I can do that in Hang out, not in Focus or Quiet.";
   }
 
-  payload.push(...filteredMessages);
+  const latestUserIndex = [...filteredMessages]
+    .map((m, index) => ({ m, index }))
+    .reverse()
+    .find(({ m }) => m.role === "user")?.index;
 
-  if (oneShotImage) {
-    const lastUserIndex = [...payload]
-      .map((m, index) => ({ m, index }))
-      .reverse()
-      .find(({ m }) => m.role === "user")?.index;
-
-    const imagePart: ChatContentPart = {
-      type: "image_url",
-      image_url: { url: oneShotImage },
-    };
-
-    if (lastUserIndex !== undefined) {
-      const lastUser = payload[lastUserIndex];
-      const textContent =
-        typeof lastUser.content === "string"
-          ? lastUser.content
-          : lastUser.content
-              .filter((part) => part.type === "text")
-              .map((part) => part.text)
-              .join("\n");
-      payload[lastUserIndex] = {
-        ...lastUser,
-        content: [
-          { type: "text", text: textContent || "Here is what I’m showing you." },
-          imagePart,
-        ],
-      };
-    } else {
-      payload.push({
-        role: "user",
-        content: [{ type: "text", text: "Here is what I’m showing you." }, imagePart],
-      });
+  let imageBase64: string | null = null;
+  if (wantsVision) {
+    try {
+      imageBase64 = await capturePrimaryDisplay();
+    } catch (error: any) {
+      return "I couldn't capture the screen. Please try again.";
     }
   }
+
+  const payload: ChatMessage[] = [{ role: "system", content: systemPrompt }];
+
+  filteredMessages.forEach((message, index) => {
+    const textContent =
+      typeof message.content === "string"
+        ? message.content
+        : message.content
+            .filter((part) => part.type === "text")
+            .map((part) => part.text)
+            .join("\n");
+
+    if (imageBase64 && index === latestUserIndex) {
+      payload.push({
+        role: "user",
+        content: [
+          { type: "text", text: textContent || "Here is what I’m showing you." },
+          { type: "image_url", image_url: { url: `data:image/png;base64,${imageBase64}` } },
+        ],
+      });
+      return;
+    }
+
+    payload.push({ role: message.role, content: textContent || " " });
+  });
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
