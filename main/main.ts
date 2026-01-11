@@ -23,6 +23,15 @@ type ChatMessage = {
   };
 };
 
+type ResponseInputPart =
+  | { type: "input_text"; text: string }
+  | { type: "input_image"; image_url: string };
+
+type ResponseInputMessage = {
+  role: "system" | "user" | "assistant";
+  content: ResponseInputPart[];
+};
+
 type ModeState = {
   primaryMode: PrimaryMode;
   effectiveMode: EffectiveMode;
@@ -508,6 +517,16 @@ function buildSystemPrompt(state: ModeState, mem: Memory) {
   ].join("\n");
 }
 
+function getThumbnailSize(
+  width: number,
+  height: number,
+  maxWidth: number,
+  maxHeight: number
+): { width: number; height: number } {
+  const ratio = Math.min(maxWidth / width, maxHeight / height, 1);
+  return { width: Math.round(width * ratio), height: Math.round(height * ratio) };
+}
+
 async function capturePrimaryDisplay(): Promise<string> {
   const display = screen.getPrimaryDisplay();
   const maxWidth = 1280;
@@ -803,7 +822,31 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
     payload.push({ role: message.role, content: textContent || " " });
   });
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  filteredMessages.forEach((message, index) => {
+    const textContent =
+      typeof message.content === "string"
+        ? message.content
+        : message.content
+            .filter((part) => part.type === "text")
+            .map((part) => part.text)
+            .join("\n");
+
+    const parts: ResponseInputPart[] = [{ type: "input_text", text: textContent || " " }];
+
+    if (imageBase64 && index === latestUserIndex) {
+      parts.push({
+        type: "input_image",
+        image_url: `data:image/png;base64,${imageBase64}`,
+      });
+    }
+
+    inputMessages.push({
+      role: message.role,
+      content: parts,
+    });
+  });
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -813,14 +856,14 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
       model: "gpt-4o-mini",
       temperature:
         modeState.effectiveMode === "active" ? 0.9 : modeState.effectiveMode === "idle" ? 0.2 : 0.4,
-      messages: payload,
+      input: inputMessages,
     }),
   });
 
   const data: any = await response.json();
   if (!response.ok) throw new Error(data?.error?.message || "OpenAI request failed");
 
-  const assistantText: string = data?.choices?.[0]?.message?.content ?? "";
+  const assistantText: string = data?.output_text ?? "";
 
   const nextHistory: ChatMessage[] = [
     ...messages.filter((m) => m.role !== "system"),
