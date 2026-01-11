@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type Memory = {
   updatedAt: number;
@@ -9,78 +9,66 @@ type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
-  meta?: {
-    type?: "proactive" | "looking";
-  };
+  imageUrl?: string;
 };
+
+type ChatContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
 
 type ChatMessage = {
   role: "system" | "user" | "assistant";
-  content: string;
-  meta?: {
-    type?: "proactive";
-  };
+  content: string | ChatContentPart[];
 };
 
 declare global {
   interface Window {
     electronAPI?: {
       chat: (messages: ChatMessage[]) => Promise<string>;
-
-      loadHistory: () => Promise<ChatMessage[]>;
       clearHistory: () => Promise<boolean>;
-
       getMemory: () => Promise<Memory>;
       addMemoryFact: (fact: string) => Promise<Memory>;
-
-      onProactiveMessage: (cb: (message: ChatMessage) => void) => void;
-      reportUserActivity: () => void;
-      reportUserTyping: () => void;
     };
   }
 }
 
-function shouldUseVision(userText: string) {
-  const normalized = userText.toLowerCase().trim();
+const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"];
+
+function isVisionRequest(text: string) {
+  const normalized = text.toLowerCase().trim();
   if (!normalized) return false;
 
-  const hasCodeFence = /```/.test(userText);
-  if (hasCodeFence) return false;
-
   const explicitPhrases = [
-    "look at my screen",
-    "look at the screen",
-    "look at my display",
-    "take a look at my screen",
-    "take a look",
+    "look at this",
     "what do you see",
     "what am i doing",
-    "what am i looking at",
-    "can you see my screen",
-    "can you see this",
-    "can you look at my screen",
-    "screenshot",
   ];
 
-  if (explicitPhrases.some((phrase) => normalized.includes(phrase))) return true;
+  return explicitPhrases.some((phrase) => normalized.includes(phrase));
+}
 
-  return false;
+function fileToDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("Failed to read image"));
+    reader.readAsDataURL(file);
+  });
 }
 
 export default function App() {
   const api = window.electronAPI;
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [fatal, setFatal] = useState<string | null>(null);
-
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [, setLookingMessageId] = useState<string | null>(null);
-
   const [memory, setMemory] = useState<Memory>({ updatedAt: Date.now(), facts: [] });
   const [rememberText, setRememberText] = useState("");
+  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
+  const [imageName, setImageName] = useState<string | null>(null);
 
-  // If preload bridge isn't available, show a useful message instead of white screen
   useEffect(() => {
     if (!api) {
       const isElectron = navigator.userAgent.includes("Electron");
@@ -94,25 +82,9 @@ export default function App() {
     setFatal(null);
   }, [api]);
 
-  // Load history + memory
   useEffect(() => {
     (async () => {
       if (!api) return;
-
-      try {
-        const history = await api.loadHistory();
-        const ui = history
-          .filter((m) => m.role === "user" || m.role === "assistant")
-          .map((m) => ({
-            id: crypto.randomUUID(),
-            role: m.role as "user" | "assistant",
-            content: m.content,
-            meta: m.meta,
-          }));
-        setMessages(ui);
-      } catch (e: any) {
-        setFatal(`History load failed: ${e?.message ?? String(e)}`);
-      }
 
       try {
         const mem = await api.getMemory();
@@ -120,70 +92,112 @@ export default function App() {
       } catch (e: any) {
         setFatal(`Memory load failed: ${e?.message ?? String(e)}`);
       }
-
-      try {
-        api.onProactiveMessage((message) => {
-          if (message.role !== "assistant") return;
-          setMessages((prev) => [
-            ...prev,
-            { id: crypto.randomUUID(), role: "assistant", content: message.content, meta: message.meta },
-          ]);
-        });
-      } catch (e: any) {
-        setFatal(`Proactive subscription failed: ${e?.message ?? String(e)}`);
-      }
     })();
   }, [api]);
 
+  useEffect(() => {
+    const handlePaste = async (event: ClipboardEvent) => {
+      const items = event.clipboardData?.items;
+      if (!items) return;
+
+      for (const item of items) {
+        if (item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (!file || !IMAGE_MIME_TYPES.includes(file.type)) return;
+          event.preventDefault();
+          try {
+            const dataUrl = await fileToDataUrl(file);
+            setImageDataUrl(dataUrl);
+            setImageName(file.name || "clipboard-image");
+          } catch (e: any) {
+            setFatal(`Image paste failed: ${e?.message ?? String(e)}`);
+          }
+          return;
+        }
+      }
+    };
+
+    window.addEventListener("paste", handlePaste);
+    return () => {
+      window.removeEventListener("paste", handlePaste);
+    };
+  }, []);
+
+  async function handleImageFile(file: File) {
+    if (!IMAGE_MIME_TYPES.includes(file.type)) {
+      setFatal("Unsupported image format. Use PNG, JPG, or WebP.");
+      return;
+    }
+
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      setImageDataUrl(dataUrl);
+      setImageName(file.name);
+    } catch (e: any) {
+      setFatal(`Image load failed: ${e?.message ?? String(e)}`);
+    }
+  }
+
+  function clearImage() {
+    setImageDataUrl(null);
+    setImageName(null);
+  }
+
   async function sendMessage() {
     if (!api) return;
-    if (!input.trim() || loading) return;
 
     const trimmedInput = input.trim();
-    const wantsVision = shouldUseVision(trimmedInput);
+    const hasImage = Boolean(imageDataUrl);
+    if (!trimmedInput && !hasImage) return;
+    if (loading) return;
+
     const userMsg: Message = {
       id: crypto.randomUUID(),
       role: "user",
       content: trimmedInput,
+      imageUrl: imageDataUrl ?? undefined,
     };
 
-    const lookingId = wantsVision ? crypto.randomUUID() : null;
-    const lookingMsg = wantsVision
-      ? { id: lookingId, role: "assistant" as const, content: "(Looking…)", meta: { type: "looking" } }
-      : null;
-    const nextUI = lookingMsg ? [...messages, userMsg, lookingMsg] : [...messages, userMsg];
+    const nextUI = [...messages, userMsg];
     setMessages(nextUI);
     setInput("");
     setLoading(true);
-    setLookingMessageId(lookingId);
+
+    const needsImagePrompt = !hasImage && isVisionRequest(trimmedInput);
+    clearImage();
+
+    if (needsImagePrompt) {
+      setMessages((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), role: "assistant", content: "If you want me to look, drop a screenshot or image here." },
+      ]);
+      setLoading(false);
+      return;
+    }
 
     try {
-      api.reportUserActivity?.();
+      const payload: ChatMessage[] = nextUI.map((m) => {
+        if (m.role === "user" && m.imageUrl) {
+          return {
+            role: "user",
+            content: [
+              { type: "text", text: m.content || " " },
+              { type: "image_url", image_url: { url: m.imageUrl } },
+            ],
+          };
+        }
+        return { role: m.role, content: m.content || " " };
+      });
 
-      const payload: ChatMessage[] = nextUI
-        .filter((m) => m.meta?.type !== "looking")
-        .map((m) => ({
-          role: m.role,
-          content: m.content,
-          meta: m.meta,
-        }));
       const reply = await api.chat(payload);
-
-      setMessages((prev) => {
-        const cleaned = lookingId ? prev.filter((m) => m.id !== lookingId) : prev;
-        return [...cleaned, { id: crypto.randomUUID(), role: "assistant", content: reply }];
-      });
+      setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "assistant", content: reply }]);
     } catch (err: any) {
-      setMessages((prev) => {
-        const cleaned = lookingId ? prev.filter((m) => m.id !== lookingId) : prev;
-        return [
-          ...cleaned,
-          { id: crypto.randomUUID(), role: "assistant", content: `Error: ${err?.message ?? String(err)}` },
-        ];
-      });
+      setMessages((prev) => [
+        ...prev,
+        { id: crypto.randomUUID(), role: "assistant", content: `Error: ${err?.message ?? String(err)}` },
+      ]);
     } finally {
       setLoading(false);
-      setLookingMessageId(null);
     }
   }
 
@@ -191,6 +205,8 @@ export default function App() {
     if (!api) return;
     await api.clearHistory();
     setMessages([]);
+    clearImage();
+    setInput("");
   }
 
   async function rememberFact() {
@@ -204,6 +220,13 @@ export default function App() {
 
   return (
     <div
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => {
+        event.preventDefault();
+        const file = event.dataTransfer.files?.[0];
+        if (!file) return;
+        void handleImageFile(file);
+      }}
       style={{
         height: "100%",
         padding: 12,
@@ -215,7 +238,6 @@ export default function App() {
         flexDirection: "column",
       }}
     >
-      {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
         <div style={{ fontSize: 14, opacity: 0.9 }}>Sidekick</div>
 
@@ -237,7 +259,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* Fatal banner (prevents silent white screens) */}
       {fatal && (
         <div
           style={{
@@ -254,7 +275,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Remember */}
       <div
         style={{
           display: "flex",
@@ -269,7 +289,6 @@ export default function App() {
           value={rememberText}
           onChange={(e) => setRememberText(e.target.value)}
           onKeyDown={(e) => {
-            api?.reportUserTyping();
             if (e.key === "Enter") rememberFact();
           }}
           placeholder="Remember this (persistent)…"
@@ -300,7 +319,6 @@ export default function App() {
         </button>
       </div>
 
-      {/* Messages */}
       <div
         style={{
           flex: 1,
@@ -318,7 +336,6 @@ export default function App() {
         )}
 
         {messages.map((m) => {
-          const isLooking = m.meta?.type === "looking";
           const isUser = m.role === "user";
           return (
             <div
@@ -332,20 +349,24 @@ export default function App() {
               <div
                 style={{
                   maxWidth: "90%",
-                  padding: isLooking ? "4px 8px" : "6px 10px",
+                  padding: "6px 10px",
                   borderRadius: 12,
-                  background: isUser
-                    ? "rgba(90,150,255,0.35)"
-                    : isLooking
-                      ? "rgba(255,255,255,0.04)"
-                      : "rgba(255,255,255,0.08)",
-                  fontSize: isLooking ? 12 : 13,
-                  fontStyle: isLooking ? "italic" : "normal",
-                  opacity: isLooking ? 0.7 : 1,
+                  background: isUser ? "rgba(90,150,255,0.35)" : "rgba(255,255,255,0.08)",
+                  fontSize: 13,
                   whiteSpace: "pre-wrap",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
                 }}
               >
-                {m.content}
+                {m.content && <div>{m.content}</div>}
+                {m.imageUrl && (
+                  <img
+                    src={m.imageUrl}
+                    alt="Uploaded"
+                    style={{ maxWidth: 180, borderRadius: 10, border: "1px solid rgba(255,255,255,0.2)" }}
+                  />
+                )}
               </div>
             </div>
           );
@@ -354,13 +375,46 @@ export default function App() {
         {loading && <div style={{ opacity: 0.6, fontSize: 12 }}>Thinking…</div>}
       </div>
 
-      {/* Input */}
-      <div style={{ display: "flex", gap: 8 }}>
+      {imageDataUrl && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: 8,
+            borderRadius: 12,
+            background: "rgba(255,255,255,0.08)",
+            marginBottom: 8,
+          }}
+        >
+          <img
+            src={imageDataUrl}
+            alt="Preview"
+            style={{ width: 56, height: 56, borderRadius: 10, objectFit: "cover" }}
+          />
+          <div style={{ flex: 1, fontSize: 12, opacity: 0.85 }}>{imageName ?? "Image ready"}</div>
+          <button
+            onClick={clearImage}
+            style={{
+              padding: "6px 10px",
+              borderRadius: 999,
+              border: "1px solid rgba(255,255,255,0.2)",
+              background: "transparent",
+              color: "#fff",
+              cursor: "pointer",
+              fontSize: 12,
+            }}
+          >
+            Remove
+          </button>
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <input
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
-            api?.reportUserTyping();
             if (e.key === "Enter") sendMessage();
           }}
           placeholder="Type a message…"
@@ -375,6 +429,35 @@ export default function App() {
             fontSize: 13,
           }}
         />
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={IMAGE_MIME_TYPES.join(",")}
+          style={{ display: "none" }}
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) {
+              void handleImageFile(file);
+            }
+            if (event.target.value) {
+              event.target.value = "";
+            }
+          }}
+        />
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          style={{
+            padding: "8px 12px",
+            borderRadius: 999,
+            border: "1px solid rgba(255,255,255,0.2)",
+            background: "rgba(255,255,255,0.06)",
+            color: "#fff",
+            cursor: "pointer",
+            fontSize: 12,
+          }}
+        >
+          Add image
+        </button>
         <button
           onClick={sendMessage}
           disabled={loading || !api}
