@@ -1,17 +1,45 @@
-import { Canvas, useFrame } from "@react-three/fiber";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { VRM, VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
 
 const vrmUrl = new URL("../../niko.vrm", import.meta.url).href;
 
-function VRMAvatar() {
-  const [vrm, setVrm] = useState<VRM | null>(null);
-  const mixerRef = useRef<THREE.AnimationMixer | null>(null);
-  const vrmRef = useRef<VRM | null>(null);
+export default function AvatarCanvas() {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return undefined;
+
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      alpha: true,
+      antialias: true,
+    });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setClearColor(new THREE.Color(0x000000), 0);
+
+    const scene = new THREE.Scene();
+
+    const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 100);
+    camera.position.set(0, 1.35, 2.25);
+    scene.add(camera);
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.1);
+    keyLight.position.set(1.5, 2.5, 2);
+    scene.add(keyLight);
+
+    const fillLight = new THREE.DirectionalLight(0xffffff, 0.4);
+    fillLight.position.set(-1.5, 1.2, 1.5);
+    scene.add(fillLight);
+
+    let vrm: VRM | null = null;
+    let mixer: THREE.AnimationMixer | null = null;
+
     const loader = new GLTFLoader();
     loader.register((parser) => new VRMLoaderPlugin(parser));
 
@@ -27,15 +55,14 @@ function VRMAvatar() {
         loadedVrm.scene.scale.setScalar(1.05);
 
         if (gltf.animations.length > 0) {
-          const mixer = new THREE.AnimationMixer(loadedVrm.scene);
+          mixer = new THREE.AnimationMixer(loadedVrm.scene);
           gltf.animations.forEach((clip) => {
-            mixer.clipAction(clip).play();
+            mixer?.clipAction(clip).play();
           });
-          mixerRef.current = mixer;
         }
 
-        vrmRef.current = loadedVrm;
-        setVrm(loadedVrm);
+        vrm = loadedVrm;
+        scene.add(loadedVrm.scene);
       },
       undefined,
       () => {
@@ -43,33 +70,49 @@ function VRMAvatar() {
       }
     );
 
+    const clock = new THREE.Clock();
+    let frameId = 0;
+
+    const resize = () => {
+      const { clientWidth, clientHeight } = canvas;
+      if (clientWidth === 0 || clientHeight === 0) return;
+
+      camera.aspect = clientWidth / clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(clientWidth, clientHeight, false);
+    };
+
+    const renderLoop = () => {
+      const delta = clock.getDelta();
+
+      if (vrm) {
+        if (mixer) {
+          mixer.update(delta);
+        } else {
+          const t = clock.elapsedTime;
+          vrm.scene.rotation.y = Math.PI + Math.sin(t * 0.5) * 0.08;
+          vrm.scene.position.y = -0.85 + Math.sin(t * 1.2) * 0.02;
+        }
+
+        vrm.update(delta);
+      }
+
+      renderer.render(scene, camera);
+      frameId = requestAnimationFrame(renderLoop);
+    };
+
+    resize();
+    frameId = requestAnimationFrame(renderLoop);
+    window.addEventListener("resize", resize);
+
     return () => {
-      mixerRef.current = null;
-      vrmRef.current?.dispose();
-      vrmRef.current = null;
+      window.removeEventListener("resize", resize);
+      cancelAnimationFrame(frameId);
+      vrm?.dispose();
+      renderer.dispose();
     };
   }, []);
 
-  useFrame((state, delta) => {
-    if (!vrm) return;
-
-    if (mixerRef.current) {
-      mixerRef.current.update(delta);
-    } else {
-      const t = state.clock.elapsedTime;
-      vrm.scene.rotation.y = Math.PI + Math.sin(t * 0.5) * 0.08;
-      vrm.scene.position.y = -0.85 + Math.sin(t * 1.2) * 0.02;
-    }
-
-    vrm.update(delta);
-  });
-
-  if (!vrm) return null;
-
-  return <primitive object={vrm.scene} />;
-}
-
-export default function AvatarCanvas() {
   return (
     <div
       style={{
@@ -78,18 +121,7 @@ export default function AvatarCanvas() {
         pointerEvents: "none",
       }}
     >
-      <Canvas
-        camera={{ position: [0, 1.35, 2.25], fov: 30 }}
-        gl={{ alpha: true, antialias: true }}
-        onCreated={({ gl }) => {
-          gl.setClearColor(new THREE.Color(0x000000), 0);
-        }}
-      >
-        <ambientLight intensity={0.6} />
-        <directionalLight position={[1.5, 2.5, 2]} intensity={1.1} />
-        <directionalLight position={[-1.5, 1.2, 1.5]} intensity={0.4} />
-        <VRMAvatar />
-      </Canvas>
+      <canvas ref={canvasRef} style={{ width: "100%", height: "100%" }} />
     </div>
   );
 }
