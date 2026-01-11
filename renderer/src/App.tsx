@@ -5,6 +5,8 @@ type Memory = {
   facts: string[];
 };
 
+type ConversationDepth = 1 | 2 | 3 | 4;
+
 type Message = {
   id: string;
   role: "user" | "assistant";
@@ -28,6 +30,8 @@ declare global {
       clearHistory: () => Promise<boolean>;
       getMemory: () => Promise<Memory>;
       addMemoryFact: (fact: string) => Promise<Memory>;
+      getConversationDepth: () => Promise<ConversationDepth>;
+      setConversationDepth: (depth: ConversationDepth) => Promise<ConversationDepth>;
     };
   }
 }
@@ -66,6 +70,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [memory, setMemory] = useState<Memory>({ updatedAt: Date.now(), facts: [] });
   const [rememberText, setRememberText] = useState("");
+  const [conversationDepth, setConversationDepth] = useState<ConversationDepth>(1);
+  const [depthStatus, setDepthStatus] = useState<string | null>(null);
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [imageName, setImageName] = useState<string | null>(null);
 
@@ -91,6 +97,18 @@ export default function App() {
         setMemory(mem);
       } catch (e: any) {
         setFatal(`Memory load failed: ${e?.message ?? String(e)}`);
+      }
+    })();
+  }, [api]);
+
+  useEffect(() => {
+    (async () => {
+      if (!api) return;
+      try {
+        const depth = await api.getConversationDepth();
+        setConversationDepth(depth);
+      } catch (e: any) {
+        setDepthStatus(`Conversation depth load failed: ${e?.message ?? String(e)}`);
       }
     })();
   }, [api]);
@@ -218,6 +236,18 @@ export default function App() {
     setRememberText("");
   }
 
+  async function updateConversationDepth(next: ConversationDepth) {
+    if (!api) return;
+    setConversationDepth(next);
+    setDepthStatus(null);
+    try {
+      const saved = await api.setConversationDepth(next);
+      setConversationDepth(saved);
+    } catch (e: any) {
+      setDepthStatus(`Conversation depth save failed: ${e?.message ?? String(e)}`);
+    }
+  }
+
   return (
     <div
       onDragOver={(event) => event.preventDefault()}
@@ -275,6 +305,22 @@ export default function App() {
         </div>
       )}
 
+      {depthStatus && (
+        <div
+          style={{
+            marginBottom: 8,
+            padding: 10,
+            borderRadius: 12,
+            background: "rgba(255, 180, 80, 0.18)",
+            border: "1px solid rgba(255, 180, 80, 0.25)",
+            fontSize: 12,
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          {depthStatus}
+        </div>
+      )}
+
       <div
         style={{
           display: "flex",
@@ -317,6 +363,49 @@ export default function App() {
         >
           Remember
         </button>
+      </div>
+
+      <div
+        style={{
+          padding: 10,
+          borderRadius: 12,
+          background: "rgba(255,255,255,0.05)",
+          marginBottom: 8,
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+        }}
+      >
+        <div style={{ fontSize: 12, opacity: 0.85 }}>Conversation Depth</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input
+            type="range"
+            min={1}
+            max={4}
+            step={1}
+            value={conversationDepth}
+            onChange={(e) => {
+              const next = Number(e.target.value) as ConversationDepth;
+              void updateConversationDepth(next);
+            }}
+            style={{ flex: 1 }}
+          />
+          <div
+            style={{
+              minWidth: 18,
+              textAlign: "center",
+              fontSize: 12,
+              padding: "4px 8px",
+              borderRadius: 999,
+              background: "rgba(255,255,255,0.12)",
+            }}
+          >
+            {conversationDepth}
+          </div>
+        </div>
+        <div style={{ fontSize: 11, opacity: 0.7 }}>
+          Controls how personally and proactively Sidekick interacts. You can change this anytime.
+        </div>
       </div>
 
       <div

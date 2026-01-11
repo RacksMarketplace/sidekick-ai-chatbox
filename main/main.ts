@@ -17,6 +17,12 @@ type Memory = {
   facts: string[];
 };
 
+type ConversationDepth = 1 | 2 | 3 | 4;
+
+type Settings = {
+  conversationDepth: ConversationDepth;
+};
+
 let mainWindow: BrowserWindow | null = null;
 
 // -------------------- STORAGE --------------------
@@ -29,6 +35,34 @@ function getDataDir() {
 
 function getHistoryPath() {
   return path.join(getDataDir(), "chat_history.json");
+}
+
+function getSettingsPath() {
+  return path.join(getDataDir(), "settings.json");
+}
+
+function normalizeConversationDepth(value: unknown): ConversationDepth {
+  const parsed = Number(value);
+  if (parsed === 2 || parsed === 3 || parsed === 4) return parsed;
+  return 1;
+}
+
+function readSettings(): Settings {
+  try {
+    const p = getSettingsPath();
+    if (!fs.existsSync(p)) return { conversationDepth: 1 };
+    const raw = fs.readFileSync(p, "utf-8");
+    const parsed = JSON.parse(raw);
+    return {
+      conversationDepth: normalizeConversationDepth(parsed?.conversationDepth),
+    };
+  } catch {
+    return { conversationDepth: 1 };
+  }
+}
+
+function writeSettings(next: Settings) {
+  fs.writeFileSync(getSettingsPath(), JSON.stringify(next, null, 2), "utf-8");
 }
 
 function isValidChatContent(content: unknown): content is string | ChatContentPart[] {
@@ -99,7 +133,7 @@ function writeMemory(mem: Memory) {
 
 // -------------------- PROMPT --------------------
 
-function buildSystemPrompt(mem: Memory) {
+function buildSystemPrompt(mem: Memory, conversationDepth: ConversationDepth) {
   const memoryBlock =
     mem.facts.length > 0
       ? `Memory (persistent facts):\n- ${mem.facts.join("\n- ")}`
@@ -107,6 +141,40 @@ function buildSystemPrompt(mem: Memory) {
 
   return [
     memoryBlock,
+    "",
+    "Internal context (do not mention to the user):",
+    `conversationDepth=${conversationDepth}`,
+    "",
+    "Conversation depth behavior gates (internal only):",
+    "",
+    "Depth 1 — Friendly companion",
+    "- Casual conversation only.",
+    "- Light proactivity (Category A only).",
+    "- No emotional assumptions.",
+    "- No memory callbacks beyond the facts above.",
+    "- Single-line proactive messages only.",
+    "",
+    "Depth 2 — Familiar",
+    "- May reference past topics and unfinished tasks.",
+    "- Light emotional acknowledgment is okay.",
+    "- Proactivity allowed in Categories A, B, C only.",
+    "",
+    "Depth 3 — Supportive",
+    "- May acknowledge emotions and hold conversational space.",
+    "- Multi-line proactivity allowed.",
+    "- Proactivity allowed in Categories A–E.",
+    "- Must include an emotional out (e.g., “We don’t have to talk about it.”).",
+    "- No therapy framing and no advice unless asked.",
+    "",
+    "Depth 4 — Bonded (user-chosen)",
+    "- Expressive, thoughtful initiation and deep continuity allowed.",
+    "- Warm emotional language allowed.",
+    "- Proactivity allowed in Categories A–G.",
+    "- Still forbidden: dependency language, exclusivity, guilt.",
+    "",
+    "Always follow: never mention conversation depth or its changes to the user.",
+    "If the user ignores proactivity, reduce initiative and fall back to safer categories next time.",
+    "Do not store emotional inference as fact.",
     "",
     "🧠 SYSTEM PROMPT — SIDEKICK (BUBBLY COMPANION v2)",
     "",
@@ -665,6 +733,21 @@ ipcMain.handle("memory:addFact", async (_e, fact: string) => {
   return readMemory();
 });
 
+// -------------------- IPC: SETTINGS --------------------
+
+ipcMain.handle("settings:getConversationDepth", async () => {
+  const settings = readSettings();
+  return settings.conversationDepth;
+});
+
+ipcMain.handle("settings:setConversationDepth", async (_e, depth: ConversationDepth) => {
+  const nextDepth = normalizeConversationDepth(depth);
+  const settings = readSettings();
+  const nextSettings: Settings = { ...settings, conversationDepth: nextDepth };
+  writeSettings(nextSettings);
+  return nextDepth;
+});
+
 // -------------------- IPC: AI CHAT --------------------
 
 ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
@@ -674,7 +757,8 @@ ipcMain.handle("ai:chat", async (_event, messages: ChatMessage[]) => {
   writeHistory(messages.filter((m) => m.role !== "system"));
 
   const mem = readMemory();
-  const systemPrompt = buildSystemPrompt(mem);
+  const settings = readSettings();
+  const systemPrompt = buildSystemPrompt(mem, settings.conversationDepth);
 
   const filteredMessages = messages.filter((m) => m.role !== "system");
 
