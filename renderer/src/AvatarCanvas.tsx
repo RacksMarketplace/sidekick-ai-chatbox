@@ -6,13 +6,7 @@ import { VRM, VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
 
 const vrmUrl = "/niko.vrm";
 // Mixamo animation set used to keep the avatar alive.
-const animationConfigs = [
-  { name: "Idle", url: "/animations/Idle.fbx", loop: THREE.LoopRepeat },
-  { name: "Weight Shift", url: "/animations/Weight Shift.fbx", loop: THREE.LoopOnce },
-  { name: "Look Around", url: "/animations/Look Around.fbx", loop: THREE.LoopOnce },
-  { name: "Arm Stretching", url: "/animations/Arm Stretching.fbx", loop: THREE.LoopOnce },
-  { name: "Flair", url: "/animations/Flair.fbx", loop: THREE.LoopOnce },
-];
+const animationConfigs = [{ name: "Idle", url: "/animations/Idle.fbx", loop: THREE.LoopRepeat }];
 
 export default function AvatarCanvas() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -164,6 +158,7 @@ export default function AvatarCanvas() {
 
         vrm = loadedVrm;
         mixer = new THREE.AnimationMixer(loadedVrm.scene);
+        console.log("Humanoid bones:", Object.keys(loadedVrm.humanoid?.humanBones ?? {}));
 
         const vrmAny = loadedVrm as unknown as {
           blendShapeProxy?: { setValue: (name: string, weight: number) => void };
@@ -201,7 +196,19 @@ export default function AvatarCanvas() {
                             reject(new Error(`No animation clip found in ${config.url}`));
                             return;
                           }
-                          const retargeted = VRMUtils.retargetAnimationClip(clip, loadedVrm);
+                          console.log("Original tracks:", clip.tracks.length);
+                          const retargeted = VRMUtils.retargetAnimationClip(loadedVrm, clip, {
+                            fps: 30,
+                          });
+                          console.log("Retargeted tracks:", retargeted.tracks.length);
+                          if (retargeted.tracks.length === 0) {
+                            reject(
+                              new Error(
+                                `Retargeted clip from ${config.url} has no tracks.`
+                              )
+                            );
+                            return;
+                          }
                           resolve({ name: config.name, clip: retargeted, loop: config.loop });
                         },
                         undefined,
