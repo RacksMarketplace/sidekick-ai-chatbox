@@ -55,6 +55,15 @@ function isVisionRequest(text: string) {
   return explicitPhrases.some((phrase) => normalized.includes(phrase));
 }
 
+function isGreetingMessage(text: string) {
+  const normalized = text.toLowerCase().trim();
+  return /^(hi|hello|hey|greetings|good (morning|afternoon|evening))\b/.test(normalized);
+}
+
+function triggerAvatarFlair() {
+  window.dispatchEvent(new CustomEvent("avatar:flair"));
+}
+
 function fileToDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -98,6 +107,7 @@ export default function App() {
       const message = await api.maybeInitiateProactivity(trigger);
       if (message) {
         setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "assistant", content: message }]);
+        triggerAvatarFlair();
       }
     } catch (e: any) {
       setFatal(`Proactivity failed: ${e?.message ?? String(e)}`);
@@ -241,6 +251,9 @@ export default function App() {
 
       const reply = await api.chat(payload);
       setMessages((prev) => [...prev, { id: crypto.randomUUID(), role: "assistant", content: reply }]);
+      if (isGreetingMessage(reply)) {
+        triggerAvatarFlair();
+      }
     } catch (err: any) {
       setMessages((prev) => [
         ...prev,

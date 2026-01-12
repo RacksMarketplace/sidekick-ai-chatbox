@@ -1,9 +1,18 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { VRM, VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
 
 const vrmUrl = "/niko.vrm";
+// Mixamo animation set used to keep the avatar alive.
+const animationConfigs = [
+  { name: "Idle", url: "/animations/Idle.fbx", loop: THREE.LoopRepeat },
+  { name: "Weight Shift", url: "/animations/Weight Shift.fbx", loop: THREE.LoopOnce },
+  { name: "Look Around", url: "/animations/Look Around.fbx", loop: THREE.LoopOnce },
+  { name: "Arm Stretching", url: "/animations/Arm Stretching.fbx", loop: THREE.LoopOnce },
+  { name: "Flair", url: "/animations/Flair.fbx", loop: THREE.LoopOnce },
+];
 
 export default function AvatarCanvas() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -45,10 +54,14 @@ export default function AvatarCanvas() {
     scene.add(debugMesh);
 
     let vrm: VRM | null = null;
-    let chestNode: THREE.Object3D | null = null;
-    let chestBaseY = 0;
-    let swayTarget: THREE.Object3D | null = null;
-    let swayBaseZ = 0;
+    // The mixer drives a base idle layer plus short overlay animations.
+    let mixer: THREE.AnimationMixer | null = null;
+    const actions = new Map<string, THREE.AnimationAction>();
+    let idleAction: THREE.AnimationAction | null = null;
+    let activeOverlayAction: THREE.AnimationAction | null = null;
+    let lastOverlayTime = 0;
+    let nextWeightShiftTime = 0;
+    let nextLookAroundTime = 0;
     let blinkSupported = false;
     let blinkLogged = false;
     let blinkStartTime = 0;
@@ -75,8 +88,53 @@ export default function AvatarCanvas() {
       nextBlinkTime = time + 3 + Math.random() * 4;
     };
 
+    const scheduleNextWeightShift = (time: number) => {
+      nextWeightShiftTime = time + 30 + Math.random() * 60;
+    };
+
+    const scheduleNextLookAround = (time: number) => {
+      nextLookAroundTime = time + 45 + Math.random() * 45;
+    };
+
+    // Crossfade an overlay animation on top of idle without stopping idle playback.
+    const crossFadeTo = (name: string, durationMs = 300) => {
+      if (!mixer) return;
+      const action = actions.get(name);
+      if (!action || action === idleAction) return;
+      if (activeOverlayAction === action) return;
+      const duration = durationMs / 1000;
+
+      action.reset();
+      action.setEffectiveTimeScale(1);
+      action.setEffectiveWeight(0);
+      action.play();
+
+      if (activeOverlayAction && activeOverlayAction !== action) {
+        activeOverlayAction.fadeOut(duration);
+      }
+      action.fadeIn(duration);
+      activeOverlayAction = action;
+      lastOverlayTime = clock.getElapsedTime();
+    };
+
+    // Helper for one-shot overlays (Weight Shift, Look Around, Flair, etc.).
+    const playOneShot = (name: string) => {
+      crossFadeTo(name, 250);
+    };
+
+    const attachHelpersToWindow = () => {
+      const globalWindow = window as Window & {
+        sidekickAvatar?: {
+          playOneShot: (name: string) => void;
+          crossFadeTo: (name: string, durationMs?: number) => void;
+        };
+      };
+      globalWindow.sidekickAvatar = { playOneShot, crossFadeTo };
+    };
+
     const loader = new GLTFLoader();
     loader.register((parser) => new VRMLoaderPlugin(parser));
+    const fbxLoader = new FBXLoader();
 
     loader.load(
       vrmUrl,
@@ -105,18 +163,7 @@ export default function AvatarCanvas() {
         }
 
         vrm = loadedVrm;
-        const humanoid = loadedVrm.humanoid;
-        const possibleChest =
-          humanoid?.getNormalizedBoneNode("chest") ??
-          humanoid?.getNormalizedBoneNode("spine") ??
-          humanoid?.getNormalizedBoneNode("upperChest");
-        if (possibleChest) {
-          chestNode = possibleChest;
-          chestBaseY = chestNode.position.y;
-        }
-
-        swayTarget = loadedVrm.scene;
-        swayBaseZ = swayTarget.rotation.z;
+        mixer = new THREE.AnimationMixer(loadedVrm.scene);
 
         const vrmAny = loadedVrm as unknown as {
           blendShapeProxy?: { setValue: (name: string, weight: number) => void };
@@ -130,10 +177,65 @@ export default function AvatarCanvas() {
           blinkLogged = true;
         }
         scheduleNextBlink(clock.getElapsedTime());
+        scheduleNextWeightShift(clock.getElapsedTime());
+        scheduleNextLookAround(clock.getElapsedTime());
+
         scene.add(loadedVrm.scene);
         scene.remove(debugMesh);
         debugGeometry.dispose();
         debugMaterial.dispose();
+
+        void (async () => {
+          try {
+            // Load FBX animations, retarget to the VRM humanoid, then create actions.
+            const clips = await Promise.all(
+              animationConfigs.map(
+                (config) =>
+                  new Promise<{ name: string; clip: THREE.AnimationClip; loop: THREE.AnimationAction["loop"] }>(
+                    (resolve, reject) => {
+                      fbxLoader.load(
+                        config.url,
+                        (fbx) => {
+                          const clip = fbx.animations[0];
+                          if (!clip) {
+                            reject(new Error(`No animation clip found in ${config.url}`));
+                            return;
+                          }
+                          const retargeted = VRMUtils.retargetAnimationClip(clip, loadedVrm);
+                          resolve({ name: config.name, clip: retargeted, loop: config.loop });
+                        },
+                        undefined,
+                        (error) => reject(error)
+                      );
+                    }
+                  )
+              )
+            );
+
+            if (!mixer) return;
+
+            clips.forEach(({ name, clip, loop }) => {
+              const action = mixer!.clipAction(clip);
+              action.setLoop(loop, loop === THREE.LoopRepeat ? Infinity : 1);
+              if (loop === THREE.LoopOnce) {
+                action.clampWhenFinished = true;
+              }
+              actions.set(name, action);
+            });
+
+            // Idle runs forever at full weight; other animations fade in/out on top.
+            const idle = actions.get("Idle");
+            if (idle) {
+              idleAction = idle;
+              idleAction.setEffectiveWeight(1);
+              idleAction.play();
+            }
+
+            attachHelpersToWindow();
+          } catch (error) {
+            console.error("Failed to load avatar animations", error);
+          }
+        })();
       },
       undefined,
       (error) => {
@@ -160,17 +262,6 @@ export default function AvatarCanvas() {
       const delta = clock.getDelta();
       if (vrm) {
         const elapsed = clock.getElapsedTime();
-        const breathAmplitude = 0.02;
-        const breathSpeed = 1.2;
-        if (chestNode) {
-          chestNode.position.y = chestBaseY + Math.sin(elapsed * breathSpeed) * breathAmplitude;
-        }
-
-        const swayAmplitude = 0.03;
-        const swaySpeed = 0.5;
-        if (swayTarget) {
-          swayTarget.rotation.z = swayBaseZ + Math.sin(elapsed * swaySpeed) * swayAmplitude;
-        }
 
         if (blinkSupported) {
           if (elapsed >= nextBlinkTime && blinkEndTime === 0) {
@@ -192,6 +283,30 @@ export default function AvatarCanvas() {
           }
         }
 
+        if (mixer) {
+          // Advance the mixer for both idle and overlay animations.
+          mixer.update(delta);
+
+          if (activeOverlayAction && activeOverlayAction.loop === THREE.LoopOnce) {
+            const overlayDuration = activeOverlayAction.getClip().duration;
+            if (activeOverlayAction.time >= overlayDuration) {
+              activeOverlayAction.fadeOut(0.3);
+              activeOverlayAction = null;
+              lastOverlayTime = elapsed;
+            }
+          }
+        }
+
+        if (!activeOverlayAction && elapsed >= nextWeightShiftTime) {
+          playOneShot("Weight Shift");
+          scheduleNextWeightShift(elapsed);
+        }
+
+        if (!activeOverlayAction && elapsed - lastOverlayTime >= 30 && elapsed >= nextLookAroundTime) {
+          playOneShot("Look Around");
+          scheduleNextLookAround(elapsed);
+        }
+
         vrm.update(delta);
       }
       renderer.render(scene, camera);
@@ -201,9 +316,16 @@ export default function AvatarCanvas() {
     resize();
     frameId = requestAnimationFrame(renderLoop);
     window.addEventListener("resize", resize);
+    const handleFlair = () => playOneShot("Flair");
+    window.addEventListener("avatar:flair", handleFlair);
 
     return () => {
       window.removeEventListener("resize", resize);
+      window.removeEventListener("avatar:flair", handleFlair);
+      const globalWindow = window as Window & { sidekickAvatar?: unknown };
+      if (globalWindow.sidekickAvatar) {
+        delete globalWindow.sidekickAvatar;
+      }
       cancelAnimationFrame(frameId);
       vrm?.dispose();
       debugGeometry.dispose();
